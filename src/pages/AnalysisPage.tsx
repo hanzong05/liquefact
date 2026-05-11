@@ -354,6 +354,40 @@ export function AnalysisPage() {
         ]!
       : null);
 
+  const liquefactionCardTone = useMemo(() => {
+    switch (hazardLabel) {
+      case "Very High":
+        return {
+          shell: "border-red-200 bg-red-50/90",
+          divider: "border-red-200/75",
+          barTrack: "bg-red-100/60",
+          barFill: "bg-red-500",
+        };
+      case "High":
+        return {
+          shell: "border-orange-200 bg-orange-50/90",
+          divider: "border-orange-200/75",
+          barTrack: "bg-orange-100/60",
+          barFill: "bg-orange-500",
+        };
+      case "Very Low":
+      case "Low":
+        return {
+          shell: "border-emerald-200 bg-emerald-50/70",
+          divider: "border-emerald-200/80",
+          barTrack: "bg-white/80",
+          barFill: "bg-emerald-500",
+        };
+      default:
+        return {
+          shell: "border-slate-200 bg-slate-50/90",
+          divider: "border-slate-200/80",
+          barTrack: "bg-white/80",
+          barFill: "bg-slate-400",
+        };
+    }
+  }, [hazardLabel]);
+
   if (phase === "parameters") {
     return (
       <div className="min-h-svh bg-slate-200/80">
@@ -607,7 +641,9 @@ export function AnalysisPage() {
                 </div>
               </div>
 
-              <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm">
+              <div
+                className={`mt-4 rounded-xl border p-4 shadow-sm ${liquefactionCardTone.shell}`}
+              >
                 <p className="text-sm font-bold text-slate-900">
                   Liquefaction Analysis
                 </p>
@@ -652,7 +688,11 @@ export function AnalysisPage() {
                         className={`mt-0.5 text-[11px] font-medium ${
                           hazardLabel === "Very Low" || hazardLabel === "Low"
                             ? "text-emerald-800/90"
-                            : "text-slate-600"
+                            : hazardLabel === "High"
+                              ? "text-orange-800/90"
+                              : hazardLabel === "Very High"
+                                ? "text-red-800/90"
+                                : "text-slate-600"
                         }`}
                       >
                         {analysis.totalLpi_remark}
@@ -660,7 +700,9 @@ export function AnalysisPage() {
                     ) : null}
                   </div>
                 </div>
-                <div className="mt-3 border-t border-emerald-200/80 pt-3 text-xs text-slate-600">
+                <div
+                  className={`mt-3 border-t pt-3 text-xs text-slate-600 ${liquefactionCardTone.divider}`}
+                >
                   Min FS (profile):{" "}
                   <span className="font-semibold tabular-nums text-slate-900">
                     {minFs !== null ? formatNum(minFs) : "—"}
@@ -675,9 +717,11 @@ export function AnalysisPage() {
                     </span>
                   ) : null}
                 </div>
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/80">
+                <div
+                  className={`mt-4 h-2 overflow-hidden rounded-full ${liquefactionCardTone.barTrack}`}
+                >
                   <div
-                    className="h-full rounded-full bg-emerald-500"
+                    className={`h-full rounded-full ${liquefactionCardTone.barFill}`}
                     style={{
                       width: `${Math.min(100, computedLpiSum !== null && computedLpiSum > 0 ? (computedLpiSum / 20) * 100 : 0)}%`,
                     }}
