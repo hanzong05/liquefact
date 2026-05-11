@@ -19,6 +19,7 @@ import {downloadAnalysisPdf} from "../utils/exportAnalysisPdf";
 import {
   countInterpEligibleBoreholesWithinKm,
   nearestInterpEligibleBoreholeKm as distanceToNearestInterpEligibleBoreholeKm,
+  siteMatchesDatasetBoreholeLocation,
 } from "../utils/boreholeParameterInterpolation";
 import {haversineDistanceKm} from "../utils/geo";
 import {
@@ -362,6 +363,9 @@ export function AnalysisPage() {
       computedLpiSum === null ||
       !Number.isFinite(computedLpiSum)
     ) {
+      return null;
+    }
+    if (siteMatchesDatasetBoreholeLocation(analysisSiteLat, analysisSiteLng, datasetBoreholes)) {
       return null;
     }
     return calibrateLpiFromNeighbors({

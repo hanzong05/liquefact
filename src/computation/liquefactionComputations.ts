@@ -1,5 +1,8 @@
 import {postPredict} from "../api/liquefactPredict";
-import {buildInterpolatedParameterTableFromDataset} from "../utils/boreholeParameterInterpolation";
+import {
+  buildInterpolatedParameterTableFromDataset,
+  siteMatchesDatasetBoreholeLocation,
+} from "../utils/boreholeParameterInterpolation";
 import {datasetBoreholes} from "../utils/constants/datasetBoreholes";
 import type {DatasetBorehole} from "../utils/constants/datasetBoreholes.type";
 import {averageIfs, compare, compute, computeString} from "../utils/helpers";
@@ -71,12 +74,15 @@ export async function runModel(
   const mag = parametersObject.earthquakeMagnitude;
   const magnitude = Number.isFinite(mag) && mag > 0 ? mag : 7;
 
-  const interpolated = buildInterpolatedParameterTableFromDataset(
-    lat,
-    lng,
-    magnitude,
-    datasetBoreholes,
-  );
+  const interpolated =
+    siteMatchesDatasetBoreholeLocation(lat, lng, datasetBoreholes)
+      ? null
+      : buildInterpolatedParameterTableFromDataset(
+          lat,
+          lng,
+          magnitude,
+          datasetBoreholes,
+        );
   if (interpolated !== null) {
     return {
       initialParameterTable: interpolated.initialParameterTable,

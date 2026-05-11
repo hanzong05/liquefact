@@ -3,6 +3,8 @@ import type {DatasetBorehole} from "./constants/datasetBoreholes.type";
 import {
   INTERPOLATED_PROFILE_DEPTHS_M,
   buildInterpolatedParameterTableFromDataset,
+  DATASET_BOREHOLE_SITE_MATCH_MAX_DISTANCE_KM,
+  siteMatchesDatasetBoreholeLocation,
 } from "./boreholeParameterInterpolation";
 
 function row(
@@ -28,6 +30,38 @@ function row(
     modulusOfElasticity: overrides.modulusOfElasticity ?? 30,
   };
 }
+
+describe("siteMatchesDatasetBoreholeLocation", () => {
+  it("is false for an empty list", () => {
+    expect(siteMatchesDatasetBoreholeLocation(15.28, 120.56, [])).toBe(false);
+  });
+
+  it("is true when the site is within the match radius of a borehole", () => {
+    const lat = 15.28;
+    const lng = 120.56;
+    const b: DatasetBorehole = {
+      boreholeId: "BH1",
+      latitude: lat + 0.00005,
+      longitude: lng - 0.00005,
+      depthRows: [row(1.5)],
+    };
+    expect(
+      siteMatchesDatasetBoreholeLocation(lat, lng, [b], DATASET_BOREHOLE_SITE_MATCH_MAX_DISTANCE_KM),
+    ).toBe(true);
+  });
+
+  it("is false when farther than the match radius", () => {
+    const lat = 15.28;
+    const lng = 120.56;
+    const b: DatasetBorehole = {
+      boreholeId: "BH1",
+      latitude: lat + 0.01,
+      longitude: lng,
+      depthRows: [row(1.5)],
+    };
+    expect(siteMatchesDatasetBoreholeLocation(lat, lng, [b])).toBe(false);
+  });
+});
 
 describe("buildInterpolatedParameterTableFromDataset", () => {
   it("returns null when no neighbors within radius", () => {

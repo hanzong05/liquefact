@@ -40,6 +40,28 @@ function isFiniteNumber(value: number | null | undefined): value is number {
   return value !== null && value !== undefined && Number.isFinite(value);
 }
 
+/**
+ * If the site lies within this distance of a catalog borehole coordinate,
+ * treat it as that borehole location: skip dataset IDW parameter fill and
+ * neighbor LPI calibration; use POST /predict and raw model ΣLPI instead.
+ */
+export const DATASET_BOREHOLE_SITE_MATCH_MAX_DISTANCE_KM = 0.025;
+
+/** True when `(siteLat, siteLng)` is on (or essentially coincident with) a dataset borehole. */
+export function siteMatchesDatasetBoreholeLocation(
+  siteLat: number,
+  siteLng: number,
+  allBoreholes: DatasetBorehole[],
+  maxDistanceKm: number = DATASET_BOREHOLE_SITE_MATCH_MAX_DISTANCE_KM,
+): boolean {
+  for (const b of allBoreholes) {
+    if (!isFiniteNumber(b.latitude) || !isFiniteNumber(b.longitude)) continue;
+    const d = haversineDistanceKm(siteLat, siteLng, b.latitude, b.longitude);
+    if (d <= maxDistanceKm) return true;
+  }
+  return false;
+}
+
 function rowIsUsableForVerticalInterp(row: DatasetBorehole["depthRows"][0]): boolean {
   return (
     isFiniteNumber(row.depthOfSoil) &&
