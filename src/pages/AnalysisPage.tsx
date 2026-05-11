@@ -306,6 +306,56 @@ export function AnalysisPage() {
     return nearest;
   }, [mapLat, mapLng]);
 
+  /**
+   * Closest borehole that has usable ΣLPI in map results, relative to the
+   * analyzed site (for the “nearest borehole data” warning).
+   */
+  const nearestBoreholeDataToAnalysisSite = useMemo(() => {
+    let nearest: {id: string; distanceKm: number} | null = null;
+    for (const r of boreholeMapResults) {
+      if (r.totalLpi === null || !Number.isFinite(r.totalLpi)) continue;
+      if (!Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) {
+        continue;
+      }
+      const distanceKm = haversineDistanceKm(
+        analysisSiteLat,
+        analysisSiteLng,
+        r.latitude,
+        r.longitude,
+      );
+      if (!nearest || distanceKm < nearest.distanceKm) {
+        nearest = {id: r.boreholeId, distanceKm};
+      }
+    }
+    return nearest;
+  }, [boreholeMapResults, analysisSiteLat, analysisSiteLng]);
+
+  /** Same inclusion rules as `calibrateLpiFromNeighbors` (finite ΣLPI within radius). */
+  const neighborBoreholeCountWithinRadius = useMemo(() => {
+    let n = 0;
+    for (const r of boreholeMapResults) {
+      if (r.totalLpi === null || !Number.isFinite(r.totalLpi)) continue;
+      if (!Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) {
+        continue;
+      }
+      const dKm = haversineDistanceKm(
+        analysisSiteLat,
+        analysisSiteLng,
+        r.latitude,
+        r.longitude,
+      );
+      if (dKm <= NEIGHBOR_CALIBRATION_MAX_RADIUS_KM) n += 1;
+    }
+    return n;
+  }, [boreholeMapResults, analysisSiteLat, analysisSiteLng]);
+
+  const noBoreholeDataWithinNeighborRadius =
+    Boolean(analysis) &&
+    !analysisLoading &&
+    !boreholeLoading &&
+    !boreholeError &&
+    neighborBoreholeCountWithinRadius === 0;
+
   const applyGeocodeHitToHeader = useCallback((hit: GeocodeHit) => {
     setTarlacScopeHint(null);
     setHeaderLat(hit.lat.toFixed(6));
@@ -659,174 +709,207 @@ export function AnalysisPage() {
                 </div>
               </div>
 
-              <div
-                className={`mt-4 rounded-xl border p-4 shadow-sm ${liquefactionCardTone.shell}`}
-              >
-                <p className="text-sm font-bold text-slate-900">
-                  Liquefaction Analysis
-                </p>
-                <div className="mt-4 flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-xs font-medium text-slate-500">
-                      Risk Level
+              {noBoreholeDataWithinNeighborRadius ? (
+                <div
+                  className="mt-4 rounded-xl border border-amber-300 bg-amber-50/95 p-4 shadow-sm"
+                  role="alert"
+                >
+                  <p className="text-sm font-bold text-amber-950">
+                    No data available
+                  </p>
+                  <p className="mt-3 text-sm leading-relaxed text-amber-950/95">
+                    {nearestBoreholeDataToAnalysisSite ? (
+                      <>
+                        Warning: Nearest borehole data was{" "}
+                        <span className="font-semibold tabular-nums">
+                          {nearestBoreholeDataToAnalysisSite.distanceKm.toFixed(
+                            2,
+                          )}
+                        </span>{" "}
+                        kilometer(s) away.
+                      </>
+                    ) : (
+                      "Warning: Nearest borehole data distance could not be determined."
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div
+                    className={`mt-4 rounded-xl border p-4 shadow-sm ${liquefactionCardTone.shell}`}
+                  >
+                    <p className="text-sm font-bold text-slate-900">
+                      Liquefaction Analysis
                     </p>
-                    <p
-                      className={`mt-0.5 text-2xl font-bold leading-tight ${
-                        displayHazardLabel === "Very Low" ||
-                        displayHazardLabel === "Low"
-                          ? "text-emerald-600"
-                          : displayHazardLabel === "High"
-                            ? "text-orange-600"
-                            : displayHazardLabel === "Very High"
-                              ? "text-red-600"
-                              : "text-slate-800"
-                      }`}
-                    >
-                      {displayHazardLabel}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs font-medium text-slate-500">Σ LPI</p>
-                    <p
-                      className={`mt-0.5 text-2xl font-bold tabular-nums ${
-                        displayHazardLabel === "Very Low" ||
-                        displayHazardLabel === "Low"
-                          ? "text-emerald-600"
-                          : displayHazardLabel === "High"
-                            ? "text-orange-600"
-                            : displayHazardLabel === "Very High"
-                              ? "text-red-600"
-                              : "text-slate-900"
-                      }`}
-                    >
-                      {displayLpiSumValue !== null
-                        ? formatNum(displayLpiSumValue)
-                        : "—"}
-                    </p>
-                    {analysis && displayHazardLabel !== "—" ? (
-                      <p
-                        className={`mt-0.5 text-[11px] font-medium ${
-                          displayHazardLabel === "Very Low" ||
-                          displayHazardLabel === "Low"
-                            ? "text-emerald-800/90"
-                            : displayHazardLabel === "High"
-                              ? "text-orange-800/90"
-                              : displayHazardLabel === "Very High"
-                                ? "text-red-800/90"
-                                : "text-slate-600"
-                        }`}
-                      >
-                        {displayHazardLabel}
-                      </p>
-                    ) : null}
-                    {/* {neighborCalibration?.isCalibrated ? (
+                    <div className="mt-4 flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-xs font-medium text-slate-500">
+                          Risk Level
+                        </p>
+                        <p
+                          className={`mt-0.5 text-2xl font-bold leading-tight ${
+                            displayHazardLabel === "Very Low" ||
+                            displayHazardLabel === "Low"
+                              ? "text-emerald-600"
+                              : displayHazardLabel === "High"
+                                ? "text-orange-600"
+                                : displayHazardLabel === "Very High"
+                                  ? "text-red-600"
+                                  : "text-slate-800"
+                          }`}
+                        >
+                          {displayHazardLabel}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs font-medium text-slate-500">
+                          Σ LPI
+                        </p>
+                        <p
+                          className={`mt-0.5 text-2xl font-bold tabular-nums ${
+                            displayHazardLabel === "Very Low" ||
+                            displayHazardLabel === "Low"
+                              ? "text-emerald-600"
+                              : displayHazardLabel === "High"
+                                ? "text-orange-600"
+                                : displayHazardLabel === "Very High"
+                                  ? "text-red-600"
+                                  : "text-slate-900"
+                          }`}
+                        >
+                          {displayLpiSumValue !== null
+                            ? formatNum(displayLpiSumValue)
+                            : "—"}
+                        </p>
+                        {analysis && displayHazardLabel !== "—" ? (
+                          <p
+                            className={`mt-0.5 text-[11px] font-medium ${
+                              displayHazardLabel === "Very Low" ||
+                              displayHazardLabel === "Low"
+                                ? "text-emerald-800/90"
+                                : displayHazardLabel === "High"
+                                  ? "text-orange-800/90"
+                                  : displayHazardLabel === "Very High"
+                                    ? "text-red-800/90"
+                                    : "text-slate-600"
+                            }`}
+                          >
+                            {displayHazardLabel}
+                          </p>
+                        ) : null}
+                        {/* {neighborCalibration?.isCalibrated ? (
                       <p className="mt-1 max-w-[200px] text-[10px] leading-snug text-slate-500">
                         Neighborhood-adjusted using boreholes within{" "}
                         {NEIGHBOR_CALIBRATION_MAX_RADIUS_KM} km (capped IDW
                         blend with site model).
                       </p>
                     ) : null} */}
+                      </div>
+                    </div>
+                    <div
+                      className={`mt-3 border-t pt-3 text-xs text-slate-600 ${liquefactionCardTone.divider}`}
+                    >
+                      Min FS (profile):{" "}
+                      <span className="font-semibold tabular-nums text-slate-900">
+                        {minFs !== null ? formatNum(minFs) : "—"}
+                      </span>
+                      {anyLiquefiable ? (
+                        <span className="ml-2 font-medium text-red-700">
+                          Liquefiable layer(s)
+                        </span>
+                      ) : analysis ? (
+                        <span className="ml-2 font-medium text-emerald-800">
+                          No liquefiable layer
+                        </span>
+                      ) : null}
+                    </div>
+                    <div
+                      className={`mt-4 h-2 overflow-hidden rounded-full ${liquefactionCardTone.barTrack}`}
+                    >
+                      <div
+                        className={`h-full rounded-full ${liquefactionCardTone.barFill}`}
+                        style={{
+                          width: `${Math.min(100, displayLpiSumValue !== null && displayLpiSumValue > 0 ? (displayLpiSumValue / 20) * 100 : 0)}%`,
+                        }}
+                        aria-hidden
+                      />
+                    </div>
+                    {analysisError ? (
+                      <p className="mt-2 text-[11px] text-red-700">
+                        {analysisError}
+                      </p>
+                    ) : null}
                   </div>
-                </div>
-                <div
-                  className={`mt-3 border-t pt-3 text-xs text-slate-600 ${liquefactionCardTone.divider}`}
-                >
-                  Min FS (profile):{" "}
-                  <span className="font-semibold tabular-nums text-slate-900">
-                    {minFs !== null ? formatNum(minFs) : "—"}
-                  </span>
-                  {anyLiquefiable ? (
-                    <span className="ml-2 font-medium text-red-700">
-                      Liquefiable layer(s)
-                    </span>
-                  ) : analysis ? (
-                    <span className="ml-2 font-medium text-emerald-800">
-                      No liquefiable layer
-                    </span>
-                  ) : null}
-                </div>
-                <div
-                  className={`mt-4 h-2 overflow-hidden rounded-full ${liquefactionCardTone.barTrack}`}
-                >
-                  <div
-                    className={`h-full rounded-full ${liquefactionCardTone.barFill}`}
-                    style={{
-                      width: `${Math.min(100, displayLpiSumValue !== null && displayLpiSumValue > 0 ? (displayLpiSumValue / 20) * 100 : 0)}%`,
-                    }}
-                    aria-hidden
-                  />
-                </div>
-                {analysisError ? (
-                  <p className="mt-2 text-[11px] text-red-700">
-                    {analysisError}
-                  </p>
-                ) : null}
-              </div>
 
-              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p className="text-sm font-bold text-slate-900">
-                  Soil Performance
-                </p>
-                <ul className="mt-4 space-y-3 border-t border-slate-100 pt-3 text-sm">
-                  <li className="flex justify-between gap-3 border-b border-slate-100 pb-3">
-                    <span className="text-slate-500">
-                      Allowable Soil Bearing Capacity
-                    </span>
-                    <span className="max-w-[55%] text-right text-sm font-semibold tabular-nums text-slate-900 wrap-break-word">
-                      {displayFooting
-                        ? `${formatSbcValue(displayFooting.sbc_qa_new)} kPa`
-                        : "—"}
-                    </span>
-                  </li>
-                  <li className="flex justify-between gap-3 pt-0.5">
-                    <span className="text-slate-500">Settlement</span>
-                    <span className="font-semibold tabular-nums text-slate-900">
-                      {displayFooting
-                        ? `${formatNum(parseFloat(displayFooting.totalSettlement))} mm`
-                        : "—"}
-                    </span>
-                  </li>
-                </ul>
-              </div>
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-sm font-bold text-slate-900">
+                      Soil Performance
+                    </p>
+                    <ul className="mt-4 space-y-3 border-t border-slate-100 pt-3 text-sm">
+                      <li className="flex justify-between gap-3 border-b border-slate-100 pb-3">
+                        <span className="text-slate-500">
+                          Allowable Soil Bearing Capacity
+                        </span>
+                        <span className="max-w-[55%] text-right text-sm font-semibold tabular-nums text-slate-900 wrap-break-word">
+                          {displayFooting
+                            ? `${formatSbcValue(displayFooting.sbc_qa_new)} kPa`
+                            : "—"}
+                        </span>
+                      </li>
+                      <li className="flex justify-between gap-3 pt-0.5">
+                        <span className="text-slate-500">Settlement</span>
+                        <span className="font-semibold tabular-nums text-slate-900">
+                          {displayFooting
+                            ? `${formatNum(parseFloat(displayFooting.totalSettlement))} mm`
+                            : "—"}
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
 
-              <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/60 p-4 shadow-sm">
-                <p className="text-sm font-bold text-slate-900">
-                  Foundation recommendation
-                </p>
-                {analysis && analysis.passed ? (
-                  <ul className="mt-4 space-y-3 text-sm">
-                    <li className="flex justify-between gap-2">
-                      <span className="text-slate-500">
-                        Base (B) of foundation
-                      </span>
-                      <span className="font-semibold tabular-nums text-blue-700">
-                        {displayFooting
-                          ? `${formatNum(displayFooting.footingWidth)} m`
-                          : "—"}
-                      </span>
-                    </li>
-                    <li className="flex justify-between gap-2">
-                      <span className="text-slate-500">
-                        Depth (D) of foundation
-                      </span>
-                      <span className="font-semibold tabular-nums text-blue-700">
-                        {params
-                          ? `${formatNum(params.foundationDepthM)} m`
-                          : "—"}
-                      </span>
-                    </li>
-                  </ul>
-                ) : (
-                  <p className="mt-3 text-sm text-slate-600">
-                    Consider other types of foundation.
-                  </p>
-                )}
-              </div>
+                  <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/60 p-4 shadow-sm">
+                    <p className="text-sm font-bold text-slate-900">
+                      Foundation recommendation
+                    </p>
+                    {analysis && analysis.passed ? (
+                      <ul className="mt-4 space-y-3 text-sm">
+                        <li className="flex justify-between gap-2">
+                          <span className="text-slate-500">
+                            Base (B) of foundation
+                          </span>
+                          <span className="font-semibold tabular-nums text-blue-700">
+                            {displayFooting
+                              ? `${formatNum(displayFooting.footingWidth)} m`
+                              : "—"}
+                          </span>
+                        </li>
+                        <li className="flex justify-between gap-2">
+                          <span className="text-slate-500">
+                            Depth (D) of foundation
+                          </span>
+                          <span className="font-semibold tabular-nums text-blue-700">
+                            {params
+                              ? `${formatNum(params.foundationDepthM)} m`
+                              : "—"}
+                          </span>
+                        </li>
+                      </ul>
+                    ) : (
+                      <p className="mt-3 text-sm text-slate-600">
+                        Consider other types of foundation.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           )}
 
           <div className="mt-4 space-y-2">
-            {analysis && params && !analysisLoading ? (
+            {analysis &&
+            params &&
+            !analysisLoading &&
+            !noBoreholeDataWithinNeighborRadius ? (
               <button
                 type="button"
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
