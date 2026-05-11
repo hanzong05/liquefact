@@ -16,6 +16,10 @@ import type {LocationParameters} from "../components/LocationParametersModal";
 import type {GeocodeHit} from "../utils/geocoding";
 import {TarlacMap, type MapViewportSnapshot} from "../components/TarlacMap";
 import {downloadAnalysisPdf} from "../utils/exportAnalysisPdf";
+import {
+  countInterpEligibleBoreholesWithinKm,
+  nearestInterpEligibleBoreholeKm as distanceToNearestInterpEligibleBoreholeKm,
+} from "../utils/boreholeParameterInterpolation";
 import {haversineDistanceKm} from "../utils/geo";
 import {
   NEIGHBOR_CALIBRATION_MAX_RADIUS_KM,
@@ -306,55 +310,33 @@ export function AnalysisPage() {
     return nearest;
   }, [mapLat, mapLng]);
 
-  /**
-   * Closest borehole that has usable ΣLPI in map results, relative to the
-   * analyzed site (for the “nearest borehole data” warning).
-   */
-  const nearestBoreholeDataToAnalysisSite = useMemo(() => {
-    let nearest: {id: string; distanceKm: number} | null = null;
-    for (const r of boreholeMapResults) {
-      if (r.totalLpi === null || !Number.isFinite(r.totalLpi)) continue;
-      if (!Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) {
-        continue;
-      }
-      const distanceKm = haversineDistanceKm(
+  const interpEligibleBoreholesWithin5km = useMemo(
+    () =>
+      countInterpEligibleBoreholesWithinKm(
         analysisSiteLat,
         analysisSiteLng,
-        r.latitude,
-        r.longitude,
-      );
-      if (!nearest || distanceKm < nearest.distanceKm) {
-        nearest = {id: r.boreholeId, distanceKm};
-      }
-    }
-    return nearest;
-  }, [boreholeMapResults, analysisSiteLat, analysisSiteLng]);
+        datasetBoreholes,
+        NEIGHBOR_CALIBRATION_MAX_RADIUS_KM,
+      ),
+    [analysisSiteLat, analysisSiteLng],
+  );
 
-  /** Same inclusion rules as `calibrateLpiFromNeighbors` (finite ΣLPI within radius). */
-  const neighborBoreholeCountWithinRadius = useMemo(() => {
-    let n = 0;
-    for (const r of boreholeMapResults) {
-      if (r.totalLpi === null || !Number.isFinite(r.totalLpi)) continue;
-      if (!Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) {
-        continue;
-      }
-      const dKm = haversineDistanceKm(
+  const nearestInterpEligibleKmFromAnalysis = useMemo(
+    () =>
+      distanceToNearestInterpEligibleBoreholeKm(
         analysisSiteLat,
         analysisSiteLng,
-        r.latitude,
-        r.longitude,
-      );
-      if (dKm <= NEIGHBOR_CALIBRATION_MAX_RADIUS_KM) n += 1;
-    }
-    return n;
-  }, [boreholeMapResults, analysisSiteLat, analysisSiteLng]);
+        datasetBoreholes,
+      ),
+    [analysisSiteLat, analysisSiteLng],
+  );
 
   const noBoreholeDataWithinNeighborRadius =
     Boolean(analysis) &&
     !analysisLoading &&
     !boreholeLoading &&
     !boreholeError &&
-    neighborBoreholeCountWithinRadius === 0;
+    interpEligibleBoreholesWithin5km === 0;
 
   const applyGeocodeHitToHeader = useCallback((hit: GeocodeHit) => {
     setTarlacScopeHint(null);
@@ -718,13 +700,11 @@ export function AnalysisPage() {
                     No data available
                   </p>
                   <p className="mt-3 text-sm leading-relaxed text-amber-950/95">
-                    {nearestBoreholeDataToAnalysisSite ? (
+                    {nearestInterpEligibleKmFromAnalysis !== null ? (
                       <>
                         Warning: Nearest borehole data was{" "}
                         <span className="font-semibold tabular-nums">
-                          {nearestBoreholeDataToAnalysisSite.distanceKm.toFixed(
-                            2,
-                          )}
+                          {nearestInterpEligibleKmFromAnalysis.toFixed(2)}
                         </span>{" "}
                         kilometer(s) away.
                       </>
