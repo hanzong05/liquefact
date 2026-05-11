@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Circle,
   CircleMarker,
   GeoJSON,
   MapContainer,
@@ -113,6 +114,11 @@ type Props = {
   mapViewRestore?: (MapViewportSnapshot & { id: number }) | null
   /** Fired when the user clicks outside Tarlac (polygon when loaded, else map max bounds). */
   onOutsideProvinceClick?: () => void
+  /**
+   * When set, draws a geodesic circle (Leaflet `radius` in meters) around the
+   * selected pin for borehole neighborhood context (e.g. LPI calibration).
+   */
+  neighborInfluenceRadiusM?: number | null
 }
 
 function MapClickSelect({
@@ -279,6 +285,7 @@ export function TarlacMap({
   flyToPinToken = 0,
   mapViewRestore = null,
   onOutsideProvinceClick,
+  neighborInfluenceRadiusM = null,
 }: Props) {
   useEffect(() => {
     ensureDefaultLeafletIcons()
@@ -366,6 +373,24 @@ export function TarlacMap({
       ) : null}
       {provinceBoundary ? (
         <GeoJSON data={provinceBoundary} style={PROVINCE_STYLE} />
+      ) : null}
+      {neighborInfluenceRadiusM !== null &&
+      neighborInfluenceRadiusM !== undefined &&
+      neighborInfluenceRadiusM > 0 &&
+      Number.isFinite(selectedLat) &&
+      Number.isFinite(selectedLng) ? (
+        <Circle
+          center={[selectedLat, selectedLng]}
+          radius={neighborInfluenceRadiusM}
+          pathOptions={{
+            color: '#2563eb',
+            weight: 2,
+            opacity: 0.75,
+            fillColor: '#3b82f6',
+            fillOpacity: 0.07,
+            interactive: false,
+          }}
+        />
       ) : null}
       <BoreholeLayer zoom={zoom} boreholes={boreholes} />
       <Marker position={[selectedLat, selectedLng]} icon={selectedIcon}>

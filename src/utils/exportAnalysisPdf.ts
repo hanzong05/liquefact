@@ -46,6 +46,11 @@ export type AnalysisPdfContext = {
   tableWeight?: number;
   /** Distance to nearest dataset borehole (km), if computed in the app. */
   nearestBoreholeKm?: number | null;
+  /** When set, liquefaction summary lines use these instead of raw `analysis` ΣLPI / band. */
+  calibratedLpiSum?: number;
+  calibratedLpiRemark?: string;
+  /** Printed under the liquefaction block when calibration is applied. */
+  neighborCalibrationNote?: string;
 };
 
 const MARGIN = 16;
@@ -177,8 +182,24 @@ export function downloadAnalysisPdf(
 
   y = ensureSpace(doc, y, 52);
   y = drawSectionTitle(doc, y, pageW, "Liquefaction analysis");
-  y = pairLine(doc, y, pageW, "LPI hazard band", analysis.totalLpi_remark || "-");
-  y = pairLine(doc, y, pageW, "Sum LPI (profile)", analysis.totalLpi || "0");
+  const lpiBandForPdf =
+    (ctx.calibratedLpiRemark ?? analysis.totalLpi_remark) || "-";
+  const sumLpiForPdf =
+    ctx.calibratedLpiSum !== undefined &&
+    Number.isFinite(ctx.calibratedLpiSum)
+      ? ctx.calibratedLpiSum.toFixed(2)
+      : analysis.totalLpi || "0";
+  y = pairLine(doc, y, pageW, "LPI hazard band", lpiBandForPdf);
+  y = pairLine(doc, y, pageW, "Sum LPI (profile)", sumLpiForPdf);
+  if (ctx.neighborCalibrationNote) {
+    doc.setFontSize(8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(ctx.neighborCalibrationNote, MARGIN, y, {
+      maxWidth: pageW - 2 * MARGIN,
+    });
+    doc.setTextColor(0, 0, 0);
+    y += LINE + 3;
+  }
   if (rockInFooting) {
     doc.setFontSize(8);
     doc.setTextColor(22, 101, 52);

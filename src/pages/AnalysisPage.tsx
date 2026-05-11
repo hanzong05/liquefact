@@ -16,6 +16,13 @@ import type {LocationParameters} from "../components/LocationParametersModal";
 import type {GeocodeHit} from "../utils/geocoding";
 import {TarlacMap, type MapViewportSnapshot} from "../components/TarlacMap";
 import {downloadAnalysisPdf} from "../utils/exportAnalysisPdf";
+import {haversineDistanceKm} from "../utils/geo";
+import {
+  NEIGHBOR_CALIBRATION_MAX_RADIUS_KM,
+  NEIGHBOR_CALIBRATION_RADIUS_METERS,
+  calibrateLpiFromNeighbors,
+  lpiHazardLabelFromSum,
+} from "../utils/neighborLpiCalibration";
 import {
   getTarlacProvinceOuterRing,
   isInsideTarlacProvince,
@@ -58,42 +65,12 @@ function minFactorOfSafety(geo: GeotechnicalAnalysisTable[]): number | null {
   return m;
 }
 
-function lpiHazardLabel(sum: number): string {
-  if (!Number.isFinite(sum) || sum <= 0) return "Very Low";
-  if (sum <= 5) return "Low";
-  if (sum <= 15) return "High";
-  return "Very High";
-}
-
 function formatSbcValue(v: number | string): string {
   if (typeof v === "string") {
     const n = Number.parseFloat(v);
     return Number.isFinite(n) ? n.toFixed(2) : v;
   }
   return Number.isFinite(v) ? v.toFixed(2) : "—";
-}
-
-function toRadians(degrees: number): number {
-  return (degrees * Math.PI) / 180;
-}
-
-function haversineDistanceKm(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number,
-): number {
-  const earthRadiusKm = 6371;
-  const dLat = toRadians(lat2 - lat1);
-  const dLng = toRadians(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRadians(lat1)) *
-      Math.cos(toRadians(lat2)) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return earthRadiusKm * c;
 }
 
 export interface LiquefactionFormInputs {
@@ -279,7 +256,13 @@ export function AnalysisPage() {
     return () => {
       ac.abort();
     };
-  }, [phase, params]);
+  }, [
+    phase,
+    params?.foundationDepthM,
+    params?.buildingLoadKn,
+    params?.earthquakeMw,
+    params?.designLifeYears,
+  ]);
 
   const legend: BoreholeLegend = boreholeMapResults.reduce(
     (acc, item) => {
@@ -337,9 +320,44 @@ export function AnalysisPage() {
       : analysis
         ? totalLpi(analysis.geotechnicalAnalysisTable)
         : null;
-  const hazardLabel =
+  const modelHazardLabel =
     analysis?.totalLpi_remark ??
-    (computedLpiSum !== null ? lpiHazardLabel(computedLpiSum) : "—");
+    (computedLpiSum !== null ? lpiHazardLabelFromSum(computedLpiSum) : "—");
+
+  const neighborCalibration = useMemo(() => {
+    if (
+      !analysis ||
+      computedLpiSum === null ||
+      !Number.isFinite(computedLpiSum)
+    ) {
+      return null;
+    }
+    return calibrateLpiFromNeighbors({
+      siteLat: analysisSiteLat,
+      siteLng: analysisSiteLng,
+      boreholes: boreholeMapResults.map((r) => ({
+        latitude: r.latitude,
+        longitude: r.longitude,
+        totalLpi: r.totalLpi,
+        remarkLpi: r.remark_lpi,
+      })),
+      modelLpi: computedLpiSum,
+      modelRemark:
+        analysis.totalLpi_remark ?? lpiHazardLabelFromSum(computedLpiSum),
+    });
+  }, [
+    analysis,
+    analysisSiteLat,
+    analysisSiteLng,
+    boreholeMapResults,
+    computedLpiSum,
+  ]);
+
+  const displayHazardLabel =
+    neighborCalibration?.displayRemark ?? modelHazardLabel;
+  const displayLpiSumValue =
+    neighborCalibration?.displayLpiSum ?? computedLpiSum;
+
   const minFs = analysis
     ? minFactorOfSafety(analysis.geotechnicalAnalysisTable)
     : null;
@@ -355,7 +373,7 @@ export function AnalysisPage() {
       : null);
 
   const liquefactionCardTone = useMemo(() => {
-    switch (hazardLabel) {
+    switch (displayHazardLabel) {
       case "Very High":
         return {
           shell: "border-red-200 bg-red-50/90",
@@ -386,7 +404,7 @@ export function AnalysisPage() {
           barFill: "bg-slate-400",
         };
     }
-  }, [hazardLabel]);
+  }, [displayHazardLabel]);
 
   if (phase === "parameters") {
     return (
@@ -654,50 +672,60 @@ export function AnalysisPage() {
                     </p>
                     <p
                       className={`mt-0.5 text-2xl font-bold leading-tight ${
-                        hazardLabel === "Very Low" || hazardLabel === "Low"
+                        displayHazardLabel === "Very Low" ||
+                        displayHazardLabel === "Low"
                           ? "text-emerald-600"
-                          : hazardLabel === "High"
+                          : displayHazardLabel === "High"
                             ? "text-orange-600"
-                            : hazardLabel === "Very High"
+                            : displayHazardLabel === "Very High"
                               ? "text-red-600"
                               : "text-slate-800"
                       }`}
                     >
-                      {hazardLabel}
+                      {displayHazardLabel}
                     </p>
                   </div>
                   <div className="text-right">
                     <p className="text-xs font-medium text-slate-500">Σ LPI</p>
                     <p
                       className={`mt-0.5 text-2xl font-bold tabular-nums ${
-                        hazardLabel === "Very Low" || hazardLabel === "Low"
+                        displayHazardLabel === "Very Low" ||
+                        displayHazardLabel === "Low"
                           ? "text-emerald-600"
-                          : hazardLabel === "High"
+                          : displayHazardLabel === "High"
                             ? "text-orange-600"
-                            : hazardLabel === "Very High"
+                            : displayHazardLabel === "Very High"
                               ? "text-red-600"
                               : "text-slate-900"
                       }`}
                     >
-                      {computedLpiSum !== null
-                        ? formatNum(computedLpiSum)
+                      {displayLpiSumValue !== null
+                        ? formatNum(displayLpiSumValue)
                         : "—"}
                     </p>
-                    {analysis?.totalLpi_remark ? (
+                    {analysis && displayHazardLabel !== "—" ? (
                       <p
                         className={`mt-0.5 text-[11px] font-medium ${
-                          hazardLabel === "Very Low" || hazardLabel === "Low"
+                          displayHazardLabel === "Very Low" ||
+                          displayHazardLabel === "Low"
                             ? "text-emerald-800/90"
-                            : hazardLabel === "High"
+                            : displayHazardLabel === "High"
                               ? "text-orange-800/90"
-                              : hazardLabel === "Very High"
+                              : displayHazardLabel === "Very High"
                                 ? "text-red-800/90"
                                 : "text-slate-600"
                         }`}
                       >
-                        {analysis.totalLpi_remark}
+                        {displayHazardLabel}
                       </p>
                     ) : null}
+                    {/* {neighborCalibration?.isCalibrated ? (
+                      <p className="mt-1 max-w-[200px] text-[10px] leading-snug text-slate-500">
+                        Neighborhood-adjusted using boreholes within{" "}
+                        {NEIGHBOR_CALIBRATION_MAX_RADIUS_KM} km (capped IDW
+                        blend with site model).
+                      </p>
+                    ) : null} */}
                   </div>
                 </div>
                 <div
@@ -723,7 +751,7 @@ export function AnalysisPage() {
                   <div
                     className={`h-full rounded-full ${liquefactionCardTone.barFill}`}
                     style={{
-                      width: `${Math.min(100, computedLpiSum !== null && computedLpiSum > 0 ? (computedLpiSum / 20) * 100 : 0)}%`,
+                      width: `${Math.min(100, displayLpiSumValue !== null && displayLpiSumValue > 0 ? (displayLpiSumValue / 20) * 100 : 0)}%`,
                     }}
                     aria-hidden
                   />
@@ -811,6 +839,15 @@ export function AnalysisPage() {
                       params,
                       tableWeight: DEFAULT_PREDICT_TABLE_WEIGHT,
                       nearestBoreholeKm: nearestBorehole?.distanceKm ?? null,
+                      ...(neighborCalibration?.isCalibrated &&
+                      neighborCalibration.displayLpiSum !== null
+                        ? {
+                            calibratedLpiSum: neighborCalibration.displayLpiSum,
+                            calibratedLpiRemark:
+                              neighborCalibration.displayRemark,
+                            neighborCalibrationNote: `LPI hazard band and sum reflect neighborhood adjustment from boreholes within ${NEIGHBOR_CALIBRATION_MAX_RADIUS_KM} km (capped inverse-distance blend with the site model). Min FS, settlement, and soil layers remain from POST /predict at this coordinate.`,
+                          }
+                        : {}),
                     });
                   } catch (e) {
                     window.alert(
@@ -941,6 +978,7 @@ export function AnalysisPage() {
                 onLocationSelect={handleMapLocationSelect}
                 flyToPinToken={flyToPinToken}
                 mapViewRestore={mapViewRestore}
+                neighborInfluenceRadiusM={NEIGHBOR_CALIBRATION_RADIUS_METERS}
                 onOutsideProvinceClick={() =>
                   setTarlacScopeHint(
                     "That point is outside Tarlac province. Click inside the blue outline to move the site pin.",
