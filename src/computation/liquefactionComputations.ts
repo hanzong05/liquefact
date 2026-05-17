@@ -3,6 +3,7 @@ import {buildExactBoreholeParameterTable} from "../utils/boreholeParameterInterp
 import {datasetBoreholes} from "../utils/constants/datasetBoreholes";
 import type {DatasetBorehole} from "../utils/constants/datasetBoreholes.type";
 import {averageIfs, compare, compute, computeString} from "../utils/helpers";
+import {NEIGHBOR_CALIBRATION_MAX_RADIUS_KM} from "../utils/neighborLpiCalibration";
 import Liquefaction from "./Liquefaction";
 
 /** Default `table_weight` for POST /predict (0 = model only, 1 = full literature tables). */
@@ -81,7 +82,7 @@ export async function runModel(
   // Always use the single nearest borehole — no IDW blending with neighbours.
   // Blending drags N60 down when adjacent boreholes have lower values, causing
   // bearing capacity to diverge from the measured borehole data.
-  const nearest = buildExactBoreholeParameterTable(lat, lng, magnitude, boreholes, Infinity);
+  const nearest = buildExactBoreholeParameterTable(lat, lng, magnitude, boreholes, NEIGHBOR_CALIBRATION_MAX_RADIUS_KM);
   if (nearest !== null) {
     return {
       initialParameterTable: nearest.initialParameterTable,
@@ -965,9 +966,12 @@ export async function iterateFootingWidths(parametersObject: Liquefaction) {
         });
       }
 
-      // Elastic settlement only — volumetric (liquefaction) is captured in LPI.
+      // Include volumetric settlement for liquefiable sites; elastic only otherwise.
       const totalSettlement = settlementAnalysisTable.reduce(
-        (acc, curr) => computeString(`${acc} + ${curr.elasticSettlement}`),
+        (acc, curr) =>
+          parametersObject.siteIsLiquefiable
+            ? computeString(`${acc} + ${curr.elasticSettlement} + ${curr.volumetricSettlement}`)
+            : computeString(`${acc} + ${curr.elasticSettlement}`),
         "0",
       );
 

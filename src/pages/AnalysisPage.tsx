@@ -874,9 +874,11 @@ export function AnalysisPage() {
                           Allowable Soil Bearing Capacity
                         </span>
                         <span className="max-w-[55%] text-right text-sm font-semibold tabular-nums text-slate-900 wrap-break-word">
-                          {displayFooting
-                            ? `${formatSbcValue(displayFooting.sbc_qa_new)} kPa`
-                            : "—"}
+                          {analysis?.siteIsLiquefiable
+                            ? "—"
+                            : displayFooting
+                              ? `${formatSbcValue(displayFooting.sbc_qa_new)} kPa`
+                              : "—"}
                         </span>
                       </li>
                       <li className="flex justify-between gap-3 pt-0.5">
