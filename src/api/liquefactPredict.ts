@@ -1,5 +1,5 @@
-// export const LIQUEFACT_API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
-export const LIQUEFACT_API_BASE = import.meta.env.VITE_API_BASE ?? 'https://hanz245-liquefact.hf.space'
+export const LIQUEFACT_API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
+// export const LIQUEFACT_API_BASE = import.meta.env.VITE_API_BASE ?? 'https://hanz245-liquefact.hf.space'
 
 export type PredictRequestBody = {
   latitude: number
