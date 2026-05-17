@@ -771,7 +771,7 @@ export interface SettlementAnalysisTableType {
   settlement: string;
 }
 
-export async function iterateFootingWidths(parametersObject: Liquefaction) {
+export async function iterateFootingWidths(parametersObject: Liquefaction, signal?: AbortSignal) {
   const {foundationDepth: userFoundationDepth, initialParameterTable, geotechnicalAnalysisTable} =
     parametersObject;
 
@@ -797,189 +797,132 @@ export async function iterateFootingWidths(parametersObject: Liquefaction) {
   let finalFootingWidthIterationPassedData: FootingWidthIterationDataType | null = null;
 
   outer: for (const foundationDepth of dfCandidates) {
+    // Yield to the event loop between Df candidates so the browser stays responsive
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (signal?.aborted) break outer;
     for (
       let footingWidth = footingWidthStart;
       footingWidth <= footingWidthEnd;
       footingWidth += footingWidthStep
     ) {
-      const tolerableSettlement = "25";
+      if (signal?.aborted) break outer;
+      const TOLERABLE = 25;
+      const B = footingWidth;
+      const Df = foundationDepth;
 
-      // formula for depth factor: =MIN(1 + 0.33 * (AJ2 / AI2), 1.33)
-      const depthFactor = computeString(
-        `min(1.33, 1 + 0.33 * (${foundationDepth} / ${footingWidth}))`,
-      );
+      const depthFactorNum = Math.min(1.33, 1 + 0.33 * (Df / B));
 
-      // n: =AVERAGEIFS(G:G, D:D, ">"&Df, D:D, "<"&(Df+B+1.5))
       const n = averageIfs(
         listOfN60s,
-        [listOfListOfDepths, `>${foundationDepth}`],
-        [listOfListOfDepths, `<${foundationDepth + footingWidth + 1.5}`],
+        [listOfListOfDepths, `>${Df}`],
+        [listOfListOfDepths, `<${Df + B + 1.5}`],
       );
-
-      // No soil layers in the influence zone — skip this (Df, B) pair.
       if (!Number.isFinite(n)) continue;
 
       const n_design = computeDesignAveragedN(
-        foundationDepth,
-        footingWidth,
-        listOfListOfDepths,
-        listOfLayerThicknesses,
-        listOfN60s,
+        Df, B, listOfListOfDepths, listOfLayerThicknesses, listOfN60s,
       );
+      const ncNum = Math.min(9, 6 * (1 + 0.2 * (Df / B)));
+      const sbc_qa_num = B <= 1.2
+        ? 12 * n * depthFactorNum * (TOLERABLE / 25.4)
+        : 8 * n * Math.pow((3.28 * B + 1) / (3.28 * B), 2) * depthFactorNum * (TOLERABLE / 25.4);
 
-      // formula for nc: =MIN(6 * (1 + 0.2 * (AJ2 / AI2)), 9)
-      const nc = computeString(
-        `min(9, 6 * (1 + 0.2 * (${foundationDepth} / ${footingWidth})))`,
-      );
-
-      //formula for sbc_qa
-      const sbc_qa = (await compare(`${footingWidth} <= 1.2`))
-        ? computeString(
-            `12 * ${n} * ${depthFactor} * (${tolerableSettlement} / 25.4)`,
-          )
-        : computeString(
-            `8 * ${n} * ((3.28 * ${footingWidth} + 1) / (3.28 * ${footingWidth}))^2 * ${depthFactor} * (${tolerableSettlement} / 25.4)`,
-          );
+      const depthFactor = depthFactorNum.toString();
+      const nc = ncNum.toString();
+      const sbc_qa = sbc_qa_num.toString();
 
       const sbc_qa_new = computeSbcQaNew(
-        foundationDepth,
-        footingWidth,
-        Number(tolerableSettlement),
-        n,
-        n_design,
-        nc,
-        depthFactor,
-        listOfListOfDepths,
-        listOfLayerThicknesses,
-        listOfSoilTypes,
+        Df, B, TOLERABLE, n, n_design, nc, depthFactor,
+        listOfListOfDepths, listOfLayerThicknesses, listOfSoilTypes,
+      );
+      const remarks_sbc = computeRemarksSbc(
+        Df, B, TOLERABLE, n, n_design, nc, depthFactor,
+        listOfListOfDepths, listOfLayerThicknesses, listOfSoilTypes,
       );
 
-      const remarks_sbc = computeRemarksSbc(
-        foundationDepth,
-        footingWidth,
-        Number(tolerableSettlement),
-        n,
-        n_design,
-        nc,
-        depthFactor,
-        listOfListOfDepths,
-        listOfLayerThicknesses,
-        listOfSoilTypes,
-      );
+      const buildingLoadNum = parametersObject.buildingLoad;
+      const tNum = parametersObject.elapsedTimeInYears;
+      const weightOfFootingNum = buildingLoadNum * 0.1;
+      const q_grossNum = (buildingLoadNum + weightOfFootingNum) / (B * B);
+      const C2num = 1 + 0.2 * Math.log10(10 * tNum);
 
       const settlementAnalysisTable: SettlementAnalysisTableType[] = [];
+      let totalSettlementNum = 0;
+
       for (let i = 0; i < initialParameterTable.length; i++) {
-        const iP = initialParameterTable[i];
-        const latitude = parametersObject.latitude;
-        const longitude = parametersObject.longitude;
+        const iP = initialParameterTable[i]!;
         const depthOfSoil = iP.depth;
-        const buildingLoad = parametersObject.buildingLoad;
-        const Width_B = footingWidth;
-        const unitWeight = String(iP.totalUnitWeight);
-        const sptNValue = String(iP.n60);
-        const modulusOfElasticity = String(iP.modulusOfElasticity);
-        const weightOfFooting = computeString(`${buildingLoad} * 0.1`);
-        const q_gross = computeString(
-          `(${buildingLoad} + ${weightOfFooting}) / (${footingWidth} * ${footingWidth})`,
-        );
-        const depthOfFooting = String(foundationDepth);
-        const groundWaterLevel = String(iP.groundWaterLevel);
+        const gwl = iP.groundWaterLevel;
 
-        const porewaterAtFoundationLevel = computeString(
-          `max(0, 9.81 * (${depthOfFooting} - ${iP.groundWaterLevel}))`,
-        );
-        const effectiveOverburdenPressureAtFoundationLevel = computeString(
-          `(${depthOfFooting} * ${unitWeight} - ${porewaterAtFoundationLevel})`,
-        );
-        const netFoundationContactPressure = computeString(
-          `(${q_gross} - ${effectiveOverburdenPressureAtFoundationLevel})`,
-        );
-        const Po = computeString(
-          `(${unitWeight} * (${depthOfFooting} + (${footingWidth} / 2))) - ${porewaterAtFoundationLevel}`,
-        );
-        const peakStrainInfluenceFactor = computeString(
-          `0.5 + 0.1 * sqrt(${netFoundationContactPressure} / ${Po})`,
-        );
+        const porewaterNum = Math.max(0, 9.81 * (Df - gwl));
+        const effectiveOverburdenNum = Df * iP.totalUnitWeight - porewaterNum;
+        const qnNum = q_grossNum - effectiveOverburdenNum;
+        const PoNum = iP.totalUnitWeight * (Df + B / 2) - porewaterNum;
+        const izpNum = 0.5 + 0.1 * Math.sqrt(qnNum / (PoNum || 1));
+        const safeIzp = Number.isFinite(izpNum) ? izpNum : 0;
 
-        const izp = Number.parseFloat(peakStrainInfluenceFactor);
-        const safeIzp = Number.isFinite(izp) ? izp : 0;
         const previousDepth = i > 0 ? initialParameterTable[i - 1]!.depth : 0;
-        const x =
-          i === 0
-            ? depthOfSoil - depthOfSoil / 2 - foundationDepth
-            : depthOfSoil - (depthOfSoil - previousDepth) / 2 - foundationDepth;
+        const x = i === 0
+          ? depthOfSoil - depthOfSoil / 2 - Df
+          : depthOfSoil - (depthOfSoil - previousDepth) / 2 - Df;
 
-        let strainInfluenceFactor: string;
-        if (x <= 0 || x > 2 * footingWidth) {
-          strainInfluenceFactor = "0";
-        } else if (x <= footingWidth / 2) {
-          strainInfluenceFactor = (
-            ((2 * x) / footingWidth) * (safeIzp - 0.1) +
-            0.1
-          ).toString();
+        let izNum: number;
+        if (x <= 0 || x > 2 * B) {
+          izNum = 0;
+        } else if (x <= B / 2) {
+          izNum = ((2 * x) / B) * (safeIzp - 0.1) + 0.1;
         } else {
-          strainInfluenceFactor = (
-            ((2 * footingWidth - x) / (1.5 * footingWidth)) *
-            safeIzp
-          ).toString();
+          izNum = ((2 * B - x) / (1.5 * B)) * safeIzp;
         }
 
-        const layerThickness = String(iP.layerThickness);
-        const correctionFactorC1 = computeString(
-          `max(0.5, 1 - 0.5 * (${effectiveOverburdenPressureAtFoundationLevel} / ${netFoundationContactPressure}))`,
-        );
-        const elapsedTimeInYears = String(parametersObject.elapsedTimeInYears);
-        const correctionFactorC2 = computeString(
-          `1 + 0.2 * log10(10 * ${elapsedTimeInYears})`,
-        );
-        const elasticSettlement = computeString(
-          `((${netFoundationContactPressure} / (${modulusOfElasticity} * 1000)) * ${strainInfluenceFactor}) * ${layerThickness} * ${correctionFactorC1} * ${correctionFactorC2} * 1000`,
-        );
+        const C1num = Math.max(0.5, 1 - 0.5 * (effectiveOverburdenNum / (qnNum || 1)));
+        const esNum = (qnNum / ((iP.modulusOfElasticity || 1) * 1000)) * izNum * iP.layerThickness * C1num * C2num * 1000;
 
-        const fs = geotechnicalAnalysisTable[i].fs;
-        const remarks_fs = geotechnicalAnalysisTable[i].remarks_fs;
+        const fsNum = parseFloat(geotechnicalAnalysisTable[i]!.fs);
+        const vsNum = depthOfSoil > 2 * B || fsNum >= 2 ? 0
+          : fsNum <= 0.5 ? 0.05
+          : (2 - fsNum) * 0.025;
+        const vsSettlementNum = vsNum * iP.layerThickness * 1000;
 
-        const volumetricStrain =
-          (await compare(`${depthOfSoil} > (2 * ${footingWidth})`)) ||
-          (await compare(`${fs} >= 2`))
-            ? "0"
-            : (await compare(`${fs} <= 0.5`))
-              ? "0.05"
-              : computeString(`(2 - ${fs}) * 0.025`);
-
-        const volumetricSettlement = computeString(
-          `${volumetricStrain} * ${layerThickness} * 1000`,
-        );
-        const settlement = computeString(
-          `${elasticSettlement} + ${volumetricSettlement}`,
-        );
+        totalSettlementNum += parametersObject.siteIsLiquefiable
+          ? esNum + vsSettlementNum
+          : esNum;
 
         settlementAnalysisTable.push({
-          latitude, longitude, depthOfSoil, buildingLoad, Width_B,
-          unitWeight, sptNValue, modulusOfElasticity, weightOfFooting, q_gross,
-          depthOfFooting, groundWaterLevel, porewaterAtFoundationLevel,
-          effectiveOverburdenPressureAtFoundationLevel, netFoundationContactPressure,
-          Po, peakStrainInfluenceFactor, strainInfluenceFactor, layerThickness,
-          correctionFactorC1, elapsedTimeInYears, correctionFactorC2,
-          elasticSettlement, fs, remarks_fs, volumetricStrain, volumetricSettlement,
-          settlement,
+          latitude: parametersObject.latitude,
+          longitude: parametersObject.longitude,
+          depthOfSoil,
+          buildingLoad: buildingLoadNum,
+          Width_B: B,
+          unitWeight: iP.totalUnitWeight.toString(),
+          sptNValue: iP.n60.toString(),
+          modulusOfElasticity: iP.modulusOfElasticity.toString(),
+          weightOfFooting: weightOfFootingNum.toString(),
+          q_gross: q_grossNum.toString(),
+          depthOfFooting: Df.toString(),
+          groundWaterLevel: gwl.toString(),
+          porewaterAtFoundationLevel: porewaterNum.toString(),
+          effectiveOverburdenPressureAtFoundationLevel: effectiveOverburdenNum.toString(),
+          netFoundationContactPressure: qnNum.toString(),
+          Po: PoNum.toString(),
+          peakStrainInfluenceFactor: safeIzp.toString(),
+          strainInfluenceFactor: izNum.toString(),
+          layerThickness: iP.layerThickness.toString(),
+          correctionFactorC1: C1num.toString(),
+          elapsedTimeInYears: tNum.toString(),
+          correctionFactorC2: C2num.toString(),
+          elasticSettlement: esNum.toString(),
+          fs: geotechnicalAnalysisTable[i]!.fs,
+          remarks_fs: geotechnicalAnalysisTable[i]!.remarks_fs,
+          volumetricStrain: vsNum.toString(),
+          volumetricSettlement: vsSettlementNum.toString(),
+          settlement: (esNum + vsSettlementNum).toString(),
         });
       }
 
-      // Include volumetric settlement for liquefiable sites; elastic only otherwise.
-      const totalSettlement = settlementAnalysisTable.reduce(
-        (acc, curr) =>
-          parametersObject.siteIsLiquefiable
-            ? computeString(`${acc} + ${curr.elasticSettlement} + ${curr.volumetricSettlement}`)
-            : computeString(`${acc} + ${curr.elasticSettlement}`),
-        "0",
-      );
-
-      const remarks_settlement = (await compare(
-        `${totalSettlement} <= ${tolerableSettlement}`,
-      ))
-        ? "PASSED"
-        : "FAILED";
+      const totalSettlement = totalSettlementNum.toString();
+      const tolerableSettlement = TOLERABLE.toString();
+      const remarks_settlement = totalSettlementNum <= TOLERABLE ? "PASSED" : "FAILED";
 
       const iterationRow: FootingWidthIterationDataType = {
         foundationDepthM: foundationDepth,
@@ -1007,7 +950,6 @@ export async function iterateFootingWidths(parametersObject: Liquefaction) {
 
   const passed = Boolean(finalFootingWidthIterationPassedData);
 
-  console.log("footingWidthIterationData", footingWidthIterationData);
 
   return {
     footingWidthIterationData,

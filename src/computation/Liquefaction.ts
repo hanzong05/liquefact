@@ -174,7 +174,7 @@ export default class Liquefaction {
         this.passed = false;
       }
 
-      const footingResult = await iterateFootingWidths(this);
+      const footingResult = await iterateFootingWidths(this, options?.signal);
       Object.assign(this, footingResult);
       applyZeroLpiIfFootingIterationsIncludeRock(this);
     } catch (error: unknown) {

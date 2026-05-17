@@ -189,7 +189,7 @@ export function AnalysisPage() {
 
   const handleMapLocationSelect = useCallback(
     (lat: number, lng: number, viewBeforeClick: MapViewportSnapshot) => {
-      if (phase !== "dashboard" || !params) return;
+      if (phase !== "dashboard" || !params || analysisLoading) return;
       setShowEditParamsModal(false);
       setTarlacScopeHint(null);
       if (showHeaderGoParamsModal) {
@@ -896,7 +896,7 @@ export function AnalysisPage() {
                     <p className="text-sm font-bold text-slate-900">
                       Foundation recommendation
                     </p>
-                    {analysis?.siteIsLiquefiable && !analysis.passed && (
+                    {analysis?.siteIsLiquefiable && (
                       <p className="mt-3 text-sm text-red-700">
                         Soil liquefaction detected. Conventional shallow foundations are not suitable — consider deep foundations, ground improvement, or soil reinforcement.
                       </p>
@@ -918,15 +918,17 @@ export function AnalysisPage() {
                             Depth (D) of foundation
                           </span>
                           <span className="font-semibold tabular-nums text-blue-700">
-                            {params
-                              ? `${formatNum(params.foundationDepthM)} m`
+                            {displayFooting
+                              ? `${formatNum(displayFooting.foundationDepthM)} m`
                               : "—"}
                           </span>
                         </li>
                       </ul>
-                    ) : !analysis?.siteIsLiquefiable && analysis ? (
+                    ) : analysis && !analysis.passed ? (
                       <p className="mt-3 text-sm text-slate-600">
-                        Consider other types of foundation.
+                        {analysis.siteIsLiquefiable
+                          ? "No shallow foundation configuration achieves acceptable settlement — consider deep foundations or ground improvement."
+                          : "Consider other types of foundation."}
                       </p>
                     ) : null}
                   </div>
@@ -1099,6 +1101,14 @@ export function AnalysisPage() {
                 }
               />
             </div>
+            {analysisLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-900/30 backdrop-blur-[2px]" style={{zIndex: 1000}}>
+                <div className="flex flex-col items-center gap-3 rounded-2xl bg-white px-8 py-6 shadow-xl">
+                  <Loader2 className="h-8 w-8 animate-spin text-slate-800" strokeWidth={2} />
+                  <p className="text-sm font-semibold text-slate-800">Analyzing location…</p>
+                </div>
+              </div>
+            )}
             <div className="pointer-events-auto absolute bottom-8 left-8 z-20 max-w-[220px] rounded-xl border border-slate-200 bg-white/95 p-4 text-xs shadow-lg backdrop-blur-sm">
               <p className="font-bold uppercase tracking-wide text-slate-800">
                 Liquefaction risk
