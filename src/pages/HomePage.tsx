@@ -1,5 +1,5 @@
 import {ArrowRight, Loader2, MapPin, Search} from "lucide-react";
-import {useCallback, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useNavigate} from "react-router-dom";
 import {GeocodeSuggestInput} from "../components/GeocodeSuggestInput";
 import {TarlacMap} from "../components/TarlacMap";
@@ -13,6 +13,7 @@ import {
   LiquefactLandscapeWordmark,
   LiquefactSquareMark,
 } from "../components/LiquefactBrandAssets";
+import {type DbBoreholeRecord, getBoreholes} from "../api/liquefactPredict";
 
 function OrDivider() {
   return (
@@ -41,6 +42,17 @@ export function HomePage() {
   const [geoBusy, setGeoBusy] = useState(false);
   const [mapResolveBusy, setMapResolveBusy] = useState(false);
   const [flyToPinToken, setFlyToPinToken] = useState(0);
+  const [databaseBoreholes, setDatabaseBoreholes] = useState<DbBoreholeRecord[]>([]);
+  const boreholeAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    boreholeAbortRef.current = ac;
+    getBoreholes(ac.signal)
+      .then(setDatabaseBoreholes)
+      .catch(() => { /* silently ignore — map still usable without borehole overlay */ });
+    return () => ac.abort();
+  }, []);
 
   const parsedCoords = useMemo(() => {
     const la = Number.parseFloat(lat);
@@ -347,6 +359,7 @@ export function HomePage() {
               selectedLat={mapLat}
               selectedLng={mapLng}
               placeName={mapMarkerName}
+              databaseBoreholes={databaseBoreholes}
               onLocationSelect={handleMapSelect}
               flyToPinToken={flyToPinToken}
               onOutsideProvinceClick={() =>

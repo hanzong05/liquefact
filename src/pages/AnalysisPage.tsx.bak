@@ -17,8 +17,9 @@ import type {GeocodeHit} from "../utils/geocoding";
 import {TarlacMap, type MapViewportSnapshot} from "../components/TarlacMap";
 import {downloadAnalysisPdf} from "../utils/exportAnalysisPdf";
 import {
+  countInterpEligibleBoreholesWithinKm,
   nearestInterpEligibleBoreholeKm as distanceToNearestInterpEligibleBoreholeKm,
-  snapToNearestDatasetBoreholeSite,
+  siteMatchesDatasetBoreholeLocation,
 } from "../utils/boreholeParameterInterpolation";
 import {haversineDistanceKm} from "../utils/geo";
 import {
@@ -31,39 +32,11 @@ import {
   getTarlacProvinceOuterRing,
   isInsideTarlacProvince,
 } from "../utils/tarlacGeography";
-import {type DbBoreholeRecord, getBoreholes} from "../api/liquefactPredict";
-import type {DatasetBorehole} from "../utils/constants/datasetBoreholes.type";
 import {datasetBoreholes} from "../utils/constants/datasetBoreholes";
 import {
   defaultLocationState,
   type AnalysisLocationState,
 } from "../routes/locationState";
-
-function dbRecordsToDatasetBoreholes(records: DbBoreholeRecord[]): DatasetBorehole[] {
-  const map = new Map<string, DatasetBorehole>();
-  for (const r of records) {
-    const key = r['Borehole ID'] ?? `${r.Latitude},${r.Longitude}`;
-    if (!map.has(key)) {
-      map.set(key, {
-        boreholeId: key,
-        latitude: r.Latitude,
-        longitude: r.Longitude,
-        depthRows: [],
-      });
-    }
-    map.get(key)!.depthRows.push({
-      depthOfSoil: r.DepthOfSoil,
-      totalUnitWeight: r['Unit Weight (γ)'],
-      n60: r['Corrected SPT-N Value (N1(60))'],
-      finesContent: r['Fines Content'],
-      peakGroundAcceleration: r['Peak Ground Acceleration'],
-      groundWaterLevel: r['Groundwater Level (m)'],
-      soilType: r.SoilType,
-      modulusOfElasticity: r['Elastic Modulus (Es) (MN/m²)'],
-    });
-  }
-  return Array.from(map.values());
-}
 
 type Phase = "parameters" | "dashboard";
 type BoreholeLegend = {
@@ -100,11 +73,9 @@ function minFactorOfSafety(geo: GeotechnicalAnalysisTable[]): number | null {
 function formatSbcValue(v: number | string): string {
   if (typeof v === "string") {
     const n = Number.parseFloat(v);
-    if (!Number.isFinite(n) || n === 0) return v;
-    return n.toFixed(2);
+    return Number.isFinite(n) ? n.toFixed(2) : v;
   }
-  if (!Number.isFinite(v) || v === 0) return "—";
-  return v.toFixed(2);
+  return Number.isFinite(v) ? v.toFixed(2) : "—";
 }
 
 export interface LiquefactionFormInputs {
@@ -124,17 +95,6 @@ export function AnalysisPage() {
 
   const [phase, setPhase] = useState<Phase>("parameters");
   const [params, setParams] = useState<LocationParameters | null>(null);
-  const [apiBoreholes, setApiBoreholes] = useState<DatasetBorehole[]>([]);
-  const boreholeAbortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    const ac = new AbortController();
-    boreholeAbortRef.current = ac;
-    getBoreholes(ac.signal)
-      .then((records) => setApiBoreholes(dbRecordsToDatasetBoreholes(records)))
-      .catch(() => {});
-    return () => ac.abort();
-  }, []);
 
   const [headerSearch, setHeaderSearch] = useState("");
   const [headerLat, setHeaderLat] = useState(String(site.lat));
@@ -249,7 +209,6 @@ export function AnalysisPage() {
         await liq.computeLiquefaction({
           signal: ac.signal,
           tableWeight: DEFAULT_PREDICT_TABLE_WEIGHT,
-          boreholes: apiBoreholes.length > 0 ? apiBoreholes : undefined,
         });
 
         setAnalysis(liq);
@@ -281,7 +240,6 @@ export function AnalysisPage() {
           params.earthquakeMw,
           {
             signal: ac.signal,
-            boreholes: apiBoreholes,
             onProgress: (progress) => {
               if (!ac.signal.aborted) setBoreholeProgress(progress);
             },
@@ -309,7 +267,6 @@ export function AnalysisPage() {
     params?.buildingLoadKn,
     params?.earthquakeMw,
     params?.designLifeYears,
-    apiBoreholes,
   ]);
 
   const legend: BoreholeLegend = boreholeMapResults.reduce(
@@ -330,11 +287,9 @@ export function AnalysisPage() {
     remarkLpi: item.remark_lpi,
     totalLpi: item.totalLpi,
   }));
-  const activeBoreholeSrc = apiBoreholes.length > 0 ? apiBoreholes : datasetBoreholes;
-
   const nearestBorehole = useMemo(() => {
     let nearest: {id: string; distanceKm: number} | null = null;
-    for (const borehole of activeBoreholeSrc) {
+    for (const borehole of datasetBoreholes) {
       if (
         borehole.latitude === null ||
         borehole.longitude === null ||
@@ -354,35 +309,41 @@ export function AnalysisPage() {
       }
     }
     return nearest;
-  }, [mapLat, mapLng, activeBoreholeSrc]);
+  }, [mapLat, mapLng]);
+
+  const interpEligibleBoreholesWithin5km = useMemo(
+    () =>
+      countInterpEligibleBoreholesWithinKm(
+        analysisSiteLat,
+        analysisSiteLng,
+        datasetBoreholes,
+        NEIGHBOR_CALIBRATION_MAX_RADIUS_KM,
+      ),
+    [analysisSiteLat, analysisSiteLng],
+  );
 
   const nearestInterpEligibleKmFromAnalysis = useMemo(
     () =>
       distanceToNearestInterpEligibleBoreholeKm(
         analysisSiteLat,
         analysisSiteLng,
-        activeBoreholeSrc,
+        datasetBoreholes,
       ),
-    [analysisSiteLat, analysisSiteLng, activeBoreholeSrc],
+    [analysisSiteLat, analysisSiteLng],
   );
 
-  // No data only when the dataset has no boreholes at all — runModel always
-  // uses the single nearest borehole regardless of distance.
   const noBoreholeDataWithinNeighborRadius =
     Boolean(analysis) &&
     !analysisLoading &&
     !boreholeLoading &&
     !boreholeError &&
-    nearestInterpEligibleKmFromAnalysis === null;
+    interpEligibleBoreholesWithin5km === 0;
 
   const applyGeocodeHitToHeader = useCallback((hit: GeocodeHit) => {
     setTarlacScopeHint(null);
     setHeaderLat(hit.lat.toFixed(6));
     setHeaderLng(hit.lng.toFixed(6));
     setHeaderSearch(hit.displayName);
-    setMapLat(hit.lat);
-    setMapLng(hit.lng);
-    setFlyToPinToken((t) => t + 1);
   }, []);
 
   const lpiSum = analysis ? Number.parseFloat(analysis.totalLpi) : null;
@@ -404,22 +365,22 @@ export function AnalysisPage() {
     ) {
       return null;
     }
-    return calibrateLpiFromNeighbors(
-      {
-        siteLat: analysisSiteLat,
-        siteLng: analysisSiteLng,
-        boreholes: boreholeMapResults.map((r) => ({
-          latitude: r.latitude,
-          longitude: r.longitude,
-          totalLpi: r.totalLpi,
-          remarkLpi: r.remark_lpi,
-        })),
-        modelLpi: computedLpiSum,
-        modelRemark:
-          analysis.totalLpi_remark ?? lpiHazardLabelFromSum(computedLpiSum),
-      },
-      {blendWeight: 0, proximityHighRiskKm: 0},
-    );
+    if (siteMatchesDatasetBoreholeLocation(analysisSiteLat, analysisSiteLng, datasetBoreholes)) {
+      return null;
+    }
+    return calibrateLpiFromNeighbors({
+      siteLat: analysisSiteLat,
+      siteLng: analysisSiteLng,
+      boreholes: boreholeMapResults.map((r) => ({
+        latitude: r.latitude,
+        longitude: r.longitude,
+        totalLpi: r.totalLpi,
+        remarkLpi: r.remark_lpi,
+      })),
+      modelLpi: computedLpiSum,
+      modelRemark:
+        analysis.totalLpi_remark ?? lpiHazardLabelFromSum(computedLpiSum),
+    });
   }, [
     analysis,
     analysisSiteLat,
@@ -496,19 +457,9 @@ export function AnalysisPage() {
   }
 
   const applyHeaderGo = async () => {
-    let la = Number.parseFloat(headerLat);
-    let lo = Number.parseFloat(headerLng);
+    const la = Number.parseFloat(headerLat);
+    const lo = Number.parseFloat(headerLng);
     if (!Number.isFinite(la) || !Number.isFinite(lo)) return;
-
-    // If typed coords land within 25 m of a dataset borehole, snap to its exact
-    // coordinates so the computation takes the same postPredict path as a map click.
-    const snapped = snapToNearestDatasetBoreholeSite(la, lo, activeBoreholeSrc);
-    if (snapped) {
-      la = snapped.lat;
-      lo = snapped.lng;
-      setHeaderLat(la.toFixed(6));
-      setHeaderLng(lo.toFixed(6));
-    }
 
     if (showHeaderGoParamsModal) {
       return;
@@ -753,7 +704,17 @@ export function AnalysisPage() {
                     No data available
                   </p>
                   <p className="mt-3 text-sm leading-relaxed text-amber-950/95">
-                    Warning: No borehole data available in the dataset.
+                    {nearestInterpEligibleKmFromAnalysis !== null ? (
+                      <>
+                        Warning: Nearest borehole data was{" "}
+                        <span className="font-semibold tabular-nums">
+                          {nearestInterpEligibleKmFromAnalysis.toFixed(2)}
+                        </span>{" "}
+                        kilometer(s) away.
+                      </>
+                    ) : (
+                      "Warning: Nearest borehole data distance could not be determined."
+                    )}
                   </p>
                 </div>
               ) : (
@@ -894,11 +855,6 @@ export function AnalysisPage() {
                     <p className="text-sm font-bold text-slate-900">
                       Foundation recommendation
                     </p>
-                    {analysis?.siteIsLiquefiable && !analysis.passed && (
-                      <p className="mt-3 text-sm text-red-700">
-                        Soil liquefaction detected. Conventional shallow foundations are not suitable — consider deep foundations, ground improvement, or soil reinforcement.
-                      </p>
-                    )}
                     {analysis && analysis.passed ? (
                       <ul className="mt-4 space-y-3 text-sm">
                         <li className="flex justify-between gap-2">
@@ -922,11 +878,11 @@ export function AnalysisPage() {
                           </span>
                         </li>
                       </ul>
-                    ) : !analysis?.siteIsLiquefiable && analysis ? (
+                    ) : (
                       <p className="mt-3 text-sm text-slate-600">
                         Consider other types of foundation.
                       </p>
-                    ) : null}
+                    )}
                   </div>
                 </>
               )}

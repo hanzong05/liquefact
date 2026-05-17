@@ -351,6 +351,178 @@ export function countInterpEligibleBoreholesWithinKm(
   return n;
 }
 
+/**
+ * Builds a parameter table directly from a single borehole's own measured data,
+ * without any IDW blending with neighbours. Use this when the site exactly
+ * coincides with a dataset borehole so that measured values are not diluted.
+ * Returns null if no borehole is found within `maxDistanceKm`.
+ */
+export function buildExactBoreholeParameterTable(
+  siteLat: number,
+  siteLng: number,
+  earthquakeMagnitude: number,
+  allBoreholes: DatasetBorehole[],
+  maxDistanceKm: number = DATASET_BOREHOLE_SITE_MATCH_MAX_DISTANCE_KM,
+): InterpolatedParameterTableResult | null {
+  let bestDist = Infinity;
+  let bestBorehole: DatasetBorehole | null = null;
+  for (const b of allBoreholes) {
+    if (!isFiniteNumber(b.latitude) || !isFiniteNumber(b.longitude)) continue;
+    if (!boreholeHasInterpDepthRows(b)) continue;
+    const d = haversineDistanceKm(siteLat, siteLng, b.latitude, b.longitude);
+    if (d <= maxDistanceKm && d < bestDist) {
+      bestDist = d;
+      bestBorehole = b;
+    }
+  }
+  if (!bestBorehole) return null;
+
+  const mag =
+    Number.isFinite(earthquakeMagnitude) && earthquakeMagnitude > 0
+      ? earthquakeMagnitude
+      : 7;
+  const listOfDepths = [...INTERPOLATED_PROFILE_DEPTHS_M];
+  const initialParameterTable: InterpolatedParameterTableResult["initialParameterTable"] =
+    [];
+
+  for (let i = 0; i < listOfDepths.length; i++) {
+    const depth = listOfDepths[i]!;
+    const prevDepth = i === 0 ? 0 : listOfDepths[i - 1]!;
+    const layerThickness = depth - prevDepth;
+
+    const s = sampleBoreholeAtDepth(bestBorehole, depth);
+    if (!s) return null;
+
+    initialParameterTable.push({
+      latitude: siteLat,
+      longitude: siteLng,
+      depth,
+      layerThickness,
+      totalUnitWeight: s.totalUnitWeight,
+      n60: s.n60,
+      finesContent: s.finesContent,
+      magnitude: mag,
+      peakGroundAcceleration: s.peakGroundAcceleration,
+      groundWaterLevel: s.groundWaterLevel,
+      soilType: s.soilCategory,
+      modulusOfElasticity: s.modulusOfElasticity,
+    });
+  }
+
+  return {initialParameterTable, listOfDepths, neighborBoreholeCount: 1};
+}
+
+/**
+ * IDW blend of the k nearest boreholes (default k=3, no radius cutoff).
+ * The nearest borehole dominates the result; the next two temper any extreme
+ * outlier values without diluting the measurement as heavily as a full 5 km IDW.
+ * Returns null only when the dataset is empty.
+ */
+export function buildKNearestBoreholeParameterTable(
+  siteLat: number,
+  siteLng: number,
+  earthquakeMagnitude: number,
+  allBoreholes: DatasetBorehole[],
+  k = 3,
+): InterpolatedParameterTableResult | null {
+  const mag =
+    Number.isFinite(earthquakeMagnitude) && earthquakeMagnitude > 0
+      ? earthquakeMagnitude
+      : 7;
+
+  const eligible = allBoreholes
+    .filter(
+      (b) =>
+        isFiniteNumber(b.latitude) &&
+        isFiniteNumber(b.longitude) &&
+        boreholeHasInterpDepthRows(b),
+    )
+    .map((b) => ({
+      b,
+      d: haversineDistanceKm(siteLat, siteLng, b.latitude!, b.longitude!),
+    }))
+    .sort((a, z) => a.d - z.d)
+    .slice(0, k);
+
+  if (eligible.length === 0) return null;
+
+  const listOfDepths = [...INTERPOLATED_PROFILE_DEPTHS_M];
+  const initialParameterTable: InterpolatedParameterTableResult["initialParameterTable"] =
+    [];
+
+  for (let i = 0; i < listOfDepths.length; i++) {
+    const depth = listOfDepths[i]!;
+    const prevDepth = i === 0 ? 0 : listOfDepths[i - 1]!;
+    const layerThickness = depth - prevDepth;
+
+    const weights: number[] = [];
+    const samples: VerticalSample[] = [];
+
+    for (const {b, d} of eligible) {
+      const s = sampleBoreholeAtDepth(b, depth);
+      if (!s) continue;
+      const w = 1 / Math.pow(d + IDW_DIST_EPS_KM, IDW_POWER);
+      weights.push(w);
+      samples.push(s);
+    }
+
+    if (samples.length === 0) return null;
+
+    const tw = idwScalar(weights, samples.map((s) => s.totalUnitWeight));
+    const n60 = idwScalar(weights, samples.map((s) => s.n60));
+    const fc = idwScalar(weights, samples.map((s) => s.finesContent));
+    const pga = idwScalar(weights, samples.map((s) => s.peakGroundAcceleration));
+    const gwl = idwScalar(weights, samples.map((s) => s.groundWaterLevel));
+    const emod = idwScalar(weights, samples.map((s) => s.modulusOfElasticity));
+
+    if (tw === null || n60 === null || fc === null || pga === null || gwl === null || emod === null) {
+      return null;
+    }
+
+    initialParameterTable.push({
+      latitude: siteLat,
+      longitude: siteLng,
+      depth,
+      layerThickness,
+      totalUnitWeight: tw,
+      n60,
+      finesContent: fc,
+      magnitude: mag,
+      peakGroundAcceleration: pga,
+      groundWaterLevel: gwl,
+      soilType: idwSoilCategory(weights, samples.map((s) => s.soilCategory)),
+      modulusOfElasticity: emod,
+    });
+  }
+
+  return {initialParameterTable, listOfDepths, neighborBoreholeCount: eligible.length};
+}
+
+/**
+ * Returns the exact coordinates of the nearest dataset borehole if it is within
+ * `maxDistanceKm` of (siteLat, siteLng), otherwise null.
+ * Use this to snap typed coordinates onto a borehole before analysis so that
+ * typed coords and map-clicked coords take the same computation path.
+ */
+export function snapToNearestDatasetBoreholeSite(
+  siteLat: number,
+  siteLng: number,
+  allBoreholes: DatasetBorehole[],
+  maxDistanceKm: number = DATASET_BOREHOLE_SITE_MATCH_MAX_DISTANCE_KM,
+): {lat: number; lng: number} | null {
+  let bestDist = Infinity;
+  let bestCoord: {lat: number; lng: number} | null = null;
+  for (const b of allBoreholes) {
+    if (!isFiniteNumber(b.latitude) || !isFiniteNumber(b.longitude)) continue;
+    const d = haversineDistanceKm(siteLat, siteLng, b.latitude, b.longitude);
+    if (d <= maxDistanceKm && d < bestDist) {
+      bestDist = d;
+      bestCoord = {lat: b.latitude, lng: b.longitude};
+    }
+  }
+  return bestCoord;
+}
+
 /** Distance (km) to nearest interp-eligible borehole (any radius), or null. */
 export function nearestInterpEligibleBoreholeKm(
   siteLat: number,

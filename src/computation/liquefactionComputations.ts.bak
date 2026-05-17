@@ -1,5 +1,8 @@
 import {postPredict} from "../api/liquefactPredict";
-import {buildExactBoreholeParameterTable} from "../utils/boreholeParameterInterpolation";
+import {
+  buildInterpolatedParameterTableFromDataset,
+  siteMatchesDatasetBoreholeLocation,
+} from "../utils/boreholeParameterInterpolation";
 import {datasetBoreholes} from "../utils/constants/datasetBoreholes";
 import type {DatasetBorehole} from "../utils/constants/datasetBoreholes.type";
 import {averageIfs, compare, compute, computeString} from "../utils/helpers";
@@ -20,8 +23,6 @@ export type RunModelOptions = {
   signal?: AbortSignal;
   /** Overrides {@link DEFAULT_PREDICT_TABLE_WEIGHT}. */
   tableWeight?: number;
-  /** Borehole dataset to use; falls back to static datasetBoreholes when absent. */
-  boreholes?: DatasetBorehole[];
 };
 
 /**
@@ -73,19 +74,19 @@ export async function runModel(
   const mag = parametersObject.earthquakeMagnitude;
   const magnitude = Number.isFinite(mag) && mag > 0 ? mag : 7;
 
-  const boreholes =
-    options?.boreholes && options.boreholes.length > 0
-      ? options.boreholes
-      : datasetBoreholes;
-
-  // Always use the single nearest borehole — no IDW blending with neighbours.
-  // Blending drags N60 down when adjacent boreholes have lower values, causing
-  // bearing capacity to diverge from the measured borehole data.
-  const nearest = buildExactBoreholeParameterTable(lat, lng, magnitude, boreholes, Infinity);
-  if (nearest !== null) {
+  const interpolated =
+    siteMatchesDatasetBoreholeLocation(lat, lng, datasetBoreholes)
+      ? null
+      : buildInterpolatedParameterTableFromDataset(
+          lat,
+          lng,
+          magnitude,
+          datasetBoreholes,
+        );
+  if (interpolated !== null) {
     return {
-      initialParameterTable: nearest.initialParameterTable,
-      listOfDepths: nearest.listOfDepths,
+      initialParameterTable: interpolated.initialParameterTable,
+      listOfDepths: interpolated.listOfDepths,
     };
   }
 
@@ -255,49 +256,44 @@ export async function computeGeotechnicalAnalysis(
           );
 
     const effectiveStress = computeString(`${totalStress} - ${porePressure}`);
-    // Guard: effective stress must be positive for sqrt and log formulas.
-    const effectiveStressNum = parseFloat(effectiveStress);
-    const safeEffStress = Number.isFinite(effectiveStressNum) && effectiveStressNum > 0
-      ? effectiveStress
-      : "0.1";
 
-    const cn = computeString(`min(1.7, sqrt(101.3 / ${safeEffStress}))`);
+    const cn = computeString(`min(1.7, sqrt(101.3 / ${effectiveStress}))`);
 
-    const n160 = cn ? computeString(`${iP.n60} * ${cn}`) : "0";
+    const n160 = computeString(`${iP.n60} * ${cn}`);
 
     const n160_2 = computeString(
       `exp(1.63 + (9.7 / (${iP.finesContent} + 0.01)) - (15.7 / (${iP.finesContent} + 0.01))^2)`,
     );
 
-    const n160cs = computeString(`${n160 || "0"} + ${n160_2 || "0"}`);
+    const n160cs = computeString(`${n160} + ${n160_2}`);
 
-    const m = n160cs ? computeString(`0.784 - 0.0786 * sqrt(${n160cs})`) : "0.784";
+    const m = computeString(`0.784 - 0.0786 * sqrt(${n160cs})`);
 
     const cn_final = computeString(
-      `min(1.7, (101.3 / ${safeEffStress})^${m || "0.784"})`,
+      `min(1.7, (101.3 / ${effectiveStress})^${m})`,
     );
 
-    const n160cs_final = computeString(`${iP.n60} * ${cn_final || "0"} + ${n160_2 || "0"}`);
+    const n160cs_final = computeString(`${iP.n60} * ${cn_final} + ${n160_2}`);
 
     const rd = computeString(
       `exp((-1.012 - 1.126*sin((${depth}/11.73)+5.133)) + (0.106 + 0.118*sin((${depth}/11.28)+5.142))*${iP.magnitude})`,
     );
 
     const csr = computeString(
-      `0.65 * ${iP.peakGroundAcceleration} * (${totalStress || "0"} / ${safeEffStress}) * ${rd || "0"}`,
+      `0.65 * ${iP.peakGroundAcceleration} * (${totalStress} / ${effectiveStress}) * ${rd}`,
     );
 
     const msfmax = computeString(
-      `min(2.2, 1.09 + ((${n160cs_final || "0"})^2 / 31.5)^2)`,
+      `min(2.2, 1.09 + ((${n160cs_final})^2 / 31.5)^2)`,
     );
 
     const msf = computeString(
-      `1 + (${msfmax || "0"} - 1) * (8.64 * exp(-${iP.magnitude}/4) - 1.325)`,
+      `1 + (${msfmax} - 1) * (8.64 * exp(-${iP.magnitude}/4) - 1.325)`,
     );
 
     //formula for ko: =MIN(1.1, 1 - MIN(0.3, 1 / (18.9 - 2.55 * SQRT(V2))) * LN(O2 / 101.3))
     const ko = computeString(
-      `min(1.1, 1 - min(0.3, 1 / (18.9 - 2.55 * sqrt(${n160cs_final || "0"}))) * log(${safeEffStress} / 101.3))`,
+      `min(1.1, 1 - min(0.3, 1 / (18.9 - 2.55 * sqrt(${n160cs_final}))) * log(${effectiveStress} / 101.3))`,
     );
 
     const crr75 = computeString(
@@ -400,59 +396,54 @@ export async function computeGeotechnicalAnalysis_ForDataset(
       : "0";
     const totalStress = computeString(`${depth} * ${iP.totalUnitWeight}`);
     const effectiveStress = computeString(`${totalStress} - ${porePressure}`);
-    const effectiveStressNum2 = parseFloat(effectiveStress);
-    const safeEffStress2 = Number.isFinite(effectiveStressNum2) && effectiveStressNum2 > 0
-      ? effectiveStress
-      : "0.1";
+    const cn = computeString(`min(1.7, sqrt(101.3 / ${effectiveStress}))`);
 
-    const cn = computeString(`min(1.7, sqrt(101.3 / ${safeEffStress2}))`);
-
-    const n160 = cn ? computeString(`${iP.n60} * ${cn}`) : "0";
+    const n160 = computeString(`${iP.n60} * ${cn}`);
 
     const n160_2 = computeString(
       `exp(1.63 + (9.7 / (${iP.finesContent} + 0.01)) - (15.7 / (${iP.finesContent} + 0.01))^2)`,
     );
 
-    const n160cs = computeString(`${n160 || "0"} + ${n160_2 || "0"}`);
+    const n160cs = computeString(`${n160} + ${n160_2}`);
 
-    const m = n160cs ? computeString(`0.784 - 0.0786 * sqrt(${n160cs})`) : "0.784";
+    const m = computeString(`0.784 - 0.0786 * sqrt(${n160cs})`);
 
     const cn_final = computeString(
-      `min(1.7, (101.3 / ${safeEffStress2})^${m || "0.784"})`,
+      `min(1.7, (101.3 / ${effectiveStress})^${m})`,
     );
 
-    const n160cs_final = computeString(`${iP.n60} * ${cn_final || "0"} + ${n160_2 || "0"}`);
+    const n160cs_final = computeString(`${iP.n60} * ${cn_final} + ${n160_2}`);
 
     const rd = computeString(
       `exp((-1.012 - 1.126*sin((${depth}/11.73)+5.133)) + (0.106 + 0.118*sin((${depth}/11.28)+5.142))*${iP.magnitude})`,
     );
 
     const csr = computeString(
-      `0.65 * ${iP.peakGroundAcceleration} * (${totalStress || "0"} / ${safeEffStress2}) * ${rd || "0"}`,
+      `0.65 * ${iP.peakGroundAcceleration} * (${totalStress} / ${effectiveStress}) * ${rd}`,
     );
 
     const msfmax = computeString(
-      `min(2.2, 1.09 + ((${n160cs_final || "0"})^2 / 31.5)^2)`,
+      `min(2.2, 1.09 + ((${n160cs_final})^2 / 31.5)^2)`,
     );
 
     const msf = computeString(
-      `1 + (${msfmax || "0"} - 1) * (8.64 * exp(-${iP.magnitude}/4) - 1.325)`,
+      `1 + (${msfmax} - 1) * (8.64 * exp(-${iP.magnitude}/4) - 1.325)`,
     );
 
     //formula for ko: =MIN(1.1, 1 - MIN(0.3, 1 / (18.9 - 2.55 * SQRT(V2))) * LN(O2 / 101.3))
     const ko = computeString(
-      `min(1.1, 1 - min(0.3, 1 / (18.9 - 2.55 * sqrt(${n160cs_final || "0"}))) * log(${safeEffStress2} / 101.3))`,
+      `min(1.1, 1 - min(0.3, 1 / (18.9 - 2.55 * sqrt(${n160cs_final}))) * log(${effectiveStress} / 101.3))`,
     );
 
     const crr75 = computeString(
-      `exp((${n160cs_final || "0"}/14.1) + (${n160cs_final || "0"}/126)^2 - (${n160cs_final || "0"}/23.6)^3 + (${n160cs_final || "0"}/25.4)^4 - 2.8)`,
+      `exp((${n160cs_final}/14.1) + (${n160cs_final}/126)^2 - (${n160cs_final}/23.6)^3 + (${n160cs_final}/25.4)^4 - 2.8)`,
     );
 
     //formula for fs: =IF(X2=0, "N/A", MIN(5, (AB2 * Z2 * AA2) / X2))
     const fs =
-      !csr || csr === "0"
+      csr === "0"
         ? "0"
-        : computeString(`min(5, (${crr75 || "0"} * ${msf || "0"} * ${ko || "0"}) / ${csr})`);
+        : computeString(`min(5, (${crr75} * ${msf} * ${ko}) / ${csr})`);
 
     const remarks_fs = (await compare(`${fs} > 1`))
       ? "NOT LIQUEFIABLE"
@@ -664,19 +655,18 @@ export function computeSbcQaNew(
   if (zone === "Rock") {
     return SBC_QA_NEW_ROCK_MESSAGE;
   }
+  if (zone === "Mixed") {
+    return "Mixed Zone - Needs Manual Analysis";
+  }
   if (zone === "Cohesive") {
     return computeQaCohesiveNumeric(nDesign, nc);
   }
-  const qaCohesionless = computeQaCohesionlessNumeric(
+  return computeQaCohesionlessNumeric(
     footingWidth,
     nMeyerhof,
     depthFactor,
     settlement,
   );
-  if (zone === "Mixed") {
-    return Math.min(computeQaCohesiveNumeric(nDesign, nc), qaCohesionless);
-  }
-  return qaCohesionless;
 }
 
 /**
@@ -724,7 +714,6 @@ export function computeRemarksSbc(
 }
 
 export type FootingWidthIterationDataType = {
-  foundationDepthM: number;
   footingWidth: number;
   tolerableSettlement: string;
   depthFactor: string;
@@ -771,7 +760,7 @@ export interface SettlementAnalysisTableType {
 }
 
 export async function iterateFootingWidths(parametersObject: Liquefaction) {
-  const {foundationDepth: userFoundationDepth, initialParameterTable, geotechnicalAnalysisTable} =
+  const {foundationDepth, initialParameterTable, geotechnicalAnalysisTable} =
     parametersObject;
 
   const listOfN60s = initialParameterTable.map((item) => item.n60);
@@ -781,223 +770,267 @@ export async function iterateFootingWidths(parametersObject: Liquefaction) {
   );
   const listOfSoilTypes = initialParameterTable.map((item) => item.soilType);
 
-  // Try the user's Df first, then 0.5 → 5.0 m in 0.5 m steps.
-  const dfCandidates = [
-    userFoundationDepth,
-    ...Array.from({length: 10}, (_, i) => Math.round((0.5 + i * 0.5) * 10) / 10).filter(
-      (d) => d !== userFoundationDepth,
-    ),
-  ];
-
   const footingWidthIterationData: FootingWidthIterationDataType[] = [];
   const footingWidthStart = 1;
   const footingWidthEnd = 4;
   const footingWidthStep = 0.1;
-  let finalFootingWidthIterationPassedData: FootingWidthIterationDataType | null = null;
+  let finalFootingWidthIterationPassedData: FootingWidthIterationDataType | null =
+    null;
+  for (
+    let footingWidth = footingWidthStart;
+    footingWidth <= footingWidthEnd;
+    footingWidth += footingWidthStep
+  ) {
+    const tolerableSettlement = "25";
 
-  outer: for (const foundationDepth of dfCandidates) {
-    for (
-      let footingWidth = footingWidthStart;
-      footingWidth <= footingWidthEnd;
-      footingWidth += footingWidthStep
-    ) {
-      const tolerableSettlement = "25";
+    // formula for depth factor: =MIN(1 + 0.33 * (AJ2 / AI2), 1.33)
+    const depthFactor = computeString(
+      `min(1.33, 1 + 0.33 * (${foundationDepth} / ${footingWidth}))`,
+    );
 
-      // formula for depth factor: =MIN(1 + 0.33 * (AJ2 / AI2), 1.33)
-      const depthFactor = computeString(
-        `min(1.33, 1 + 0.33 * (${foundationDepth} / ${footingWidth}))`,
+    // n: =AVERAGEIFS(G:G, D:D, ">"&Df, D:D, "<"&(Df+B+1.5))
+    const n = averageIfs(
+      listOfN60s,
+      [listOfListOfDepths, `>${foundationDepth}`],
+      [listOfListOfDepths, `<${foundationDepth + footingWidth + 1.5}`],
+    );
+
+    const n_design = computeDesignAveragedN(
+      foundationDepth,
+      footingWidth,
+      listOfListOfDepths,
+      listOfLayerThicknesses,
+      listOfN60s,
+    );
+
+    // formula for nc: =MIN(6 * (1 + 0.2 * (AJ2 / AI2)), 9)
+    const nc = computeString(
+      `min(9, 6 * (1 + 0.2 * (${foundationDepth} / ${footingWidth})))`,
+    );
+
+    //formula for sbc_qa: =IF(AI2<=1.2,12*AM2*AL2*(AK2/25.4),8*AM2*((3.28*AI2+1)/(3.28*AI2))^2*AL2*(AK2/25.4))
+    const sbc_qa = (await compare(`${footingWidth} <= 1.2`))
+      ? computeString(
+          `12 * ${n} * ${depthFactor} * (${tolerableSettlement} / 25.4)`,
+        )
+      : computeString(
+          `8 * ${n} * ((3.28 * ${footingWidth} + 1) / (3.28 * ${footingWidth}))^2 * ${depthFactor} * (${tolerableSettlement} / 25.4)`,
+        );
+
+    const sbc_qa_new = computeSbcQaNew(
+      foundationDepth,
+      footingWidth,
+      Number(tolerableSettlement),
+      n,
+      n_design,
+      nc,
+      depthFactor,
+      listOfListOfDepths,
+      listOfLayerThicknesses,
+      listOfSoilTypes,
+    );
+
+    const remarks_sbc = computeRemarksSbc(
+      foundationDepth,
+      footingWidth,
+      Number(tolerableSettlement),
+      n,
+      n_design,
+      nc,
+      depthFactor,
+      listOfListOfDepths,
+      listOfLayerThicknesses,
+      listOfSoilTypes,
+    );
+
+    const settlementAnalysisTable: SettlementAnalysisTableType[] = [];
+    // for (let iP of initialParameterTable) {
+    for (let i = 0; i < initialParameterTable.length; i++) {
+      const iP = initialParameterTable[i];
+      const latitude = parametersObject.latitude;
+      const longitude = parametersObject.longitude;
+      const depthOfSoil = iP.depth;
+      const buildingLoad = parametersObject.buildingLoad;
+      const Width_B = footingWidth;
+      const unitWeight = String(iP.totalUnitWeight);
+      const sptNValue = String(iP.n60);
+      const modulusOfElasticity = String(iP.modulusOfElasticity);
+      const weightOfFooting = computeString(`${buildingLoad} * 0.1`);
+      // formula for q_gross: =(AW2+BB2)/(AX2*AX2)
+      const q_gross = computeString(
+        `(${buildingLoad} + ${weightOfFooting}) / (${footingWidth} * ${footingWidth})`,
+      );
+      const depthOfFooting = String(foundationDepth);
+      const groundWaterLevel = String(iP.groundWaterLevel);
+
+      //formule for porewater at foundation level: =MAX(0, 9.81 * (BD2 - BF2))
+      const porewaterAtFoundationLevel = computeString(
+        `max(0, 9.81 * (${depthOfFooting} - ${iP.groundWaterLevel}))`,
       );
 
-      // n: =AVERAGEIFS(G:G, D:D, ">"&Df, D:D, "<"&(Df+B+1.5))
-      const n = averageIfs(
-        listOfN60s,
-        [listOfListOfDepths, `>${foundationDepth}`],
-        [listOfListOfDepths, `<${foundationDepth + footingWidth + 1.5}`],
+      // formule for effective overburden pressure at foundation level: =(BD2 * BE2) - BG2
+      const effectiveOverburdenPressureAtFoundationLevel = computeString(
+        `(${depthOfFooting} * ${unitWeight} - ${porewaterAtFoundationLevel})`,
       );
 
-      // No soil layers in the influence zone — skip this (Df, B) pair.
-      if (!Number.isFinite(n)) continue;
-
-      const n_design = computeDesignAveragedN(
-        foundationDepth,
-        footingWidth,
-        listOfListOfDepths,
-        listOfLayerThicknesses,
-        listOfN60s,
+      const netFoundationContactPressure = computeString(
+        `(${q_gross} - ${effectiveOverburdenPressureAtFoundationLevel})`,
       );
 
-      // formula for nc: =MIN(6 * (1 + 0.2 * (AJ2 / AI2)), 9)
-      const nc = computeString(
-        `min(9, 6 * (1 + 0.2 * (${foundationDepth} / ${footingWidth})))`,
+      // formula for Po: =(BE2 * (BD2 + (AX2/ 2))) - BG2
+      const Po = computeString(
+        `(${unitWeight} * (${depthOfFooting} + (${footingWidth} / 2))) - ${porewaterAtFoundationLevel}`,
       );
 
-      //formula for sbc_qa
-      const sbc_qa = (await compare(`${footingWidth} <= 1.2`))
-        ? computeString(
-            `12 * ${n} * ${depthFactor} * (${tolerableSettlement} / 25.4)`,
-          )
-        : computeString(
-            `8 * ${n} * ((3.28 * ${footingWidth} + 1) / (3.28 * ${footingWidth}))^2 * ${depthFactor} * (${tolerableSettlement} / 25.4)`,
-          );
-
-      const sbc_qa_new = computeSbcQaNew(
-        foundationDepth,
-        footingWidth,
-        Number(tolerableSettlement),
-        n,
-        n_design,
-        nc,
-        depthFactor,
-        listOfListOfDepths,
-        listOfLayerThicknesses,
-        listOfSoilTypes,
+      const peakStrainInfluenceFactor = computeString(
+        `0.5 + 0.1 * sqrt(${netFoundationContactPressure} / ${Po})`,
       );
 
-      const remarks_sbc = computeRemarksSbc(
-        foundationDepth,
-        footingWidth,
-        Number(tolerableSettlement),
-        n,
-        n_design,
-        nc,
-        depthFactor,
-        listOfListOfDepths,
-        listOfLayerThicknesses,
-        listOfSoilTypes,
-      );
+      // formula for strain influence factor
+      // first row:  x = (AY2 - AY2/2) - BG2
+      // next rows:  x = (AYi - (AYi - AYi-1)/2) - BGi
+      // then:
+      // IF(x<=0,0,IF(x>2*B,0,IF(x<=B/2,(2*x/B)*(Izp-0.1)+0.1,((2*B)-x)/(1.5*B)*Izp)))
+      const izp = Number.parseFloat(peakStrainInfluenceFactor);
+      const safeIzp = Number.isFinite(izp) ? izp : 0;
+      const previousDepth = i > 0 ? initialParameterTable[i - 1]!.depth : 0;
+      const x =
+        i === 0
+          ? depthOfSoil - depthOfSoil / 2 - foundationDepth
+          : depthOfSoil - (depthOfSoil - previousDepth) / 2 - foundationDepth;
 
-      const settlementAnalysisTable: SettlementAnalysisTableType[] = [];
-      for (let i = 0; i < initialParameterTable.length; i++) {
-        const iP = initialParameterTable[i];
-        const latitude = parametersObject.latitude;
-        const longitude = parametersObject.longitude;
-        const depthOfSoil = iP.depth;
-        const buildingLoad = parametersObject.buildingLoad;
-        const Width_B = footingWidth;
-        const unitWeight = String(iP.totalUnitWeight);
-        const sptNValue = String(iP.n60);
-        const modulusOfElasticity = String(iP.modulusOfElasticity);
-        const weightOfFooting = computeString(`${buildingLoad} * 0.1`);
-        const q_gross = computeString(
-          `(${buildingLoad} + ${weightOfFooting}) / (${footingWidth} * ${footingWidth})`,
-        );
-        const depthOfFooting = String(foundationDepth);
-        const groundWaterLevel = String(iP.groundWaterLevel);
-
-        const porewaterAtFoundationLevel = computeString(
-          `max(0, 9.81 * (${depthOfFooting} - ${iP.groundWaterLevel}))`,
-        );
-        const effectiveOverburdenPressureAtFoundationLevel = computeString(
-          `(${depthOfFooting} * ${unitWeight} - ${porewaterAtFoundationLevel})`,
-        );
-        const netFoundationContactPressure = computeString(
-          `(${q_gross} - ${effectiveOverburdenPressureAtFoundationLevel})`,
-        );
-        const Po = computeString(
-          `(${unitWeight} * (${depthOfFooting} + (${footingWidth} / 2))) - ${porewaterAtFoundationLevel}`,
-        );
-        const peakStrainInfluenceFactor = computeString(
-          `0.5 + 0.1 * sqrt(${netFoundationContactPressure} / ${Po})`,
-        );
-
-        const izp = Number.parseFloat(peakStrainInfluenceFactor);
-        const safeIzp = Number.isFinite(izp) ? izp : 0;
-        const previousDepth = i > 0 ? initialParameterTable[i - 1]!.depth : 0;
-        const x =
-          i === 0
-            ? depthOfSoil - depthOfSoil / 2 - foundationDepth
-            : depthOfSoil - (depthOfSoil - previousDepth) / 2 - foundationDepth;
-
-        let strainInfluenceFactor: string;
-        if (x <= 0 || x > 2 * footingWidth) {
-          strainInfluenceFactor = "0";
-        } else if (x <= footingWidth / 2) {
-          strainInfluenceFactor = (
-            ((2 * x) / footingWidth) * (safeIzp - 0.1) +
-            0.1
-          ).toString();
-        } else {
-          strainInfluenceFactor = (
-            ((2 * footingWidth - x) / (1.5 * footingWidth)) *
-            safeIzp
-          ).toString();
-        }
-
-        const layerThickness = String(iP.layerThickness);
-        const correctionFactorC1 = computeString(
-          `max(0.5, 1 - 0.5 * (${effectiveOverburdenPressureAtFoundationLevel} / ${netFoundationContactPressure}))`,
-        );
-        const elapsedTimeInYears = String(parametersObject.elapsedTimeInYears);
-        const correctionFactorC2 = computeString(
-          `1 + 0.2 * log10(10 * ${elapsedTimeInYears})`,
-        );
-        const elasticSettlement = computeString(
-          `((${netFoundationContactPressure} / (${modulusOfElasticity} * 1000)) * ${strainInfluenceFactor}) * ${layerThickness} * ${correctionFactorC1} * ${correctionFactorC2} * 1000`,
-        );
-
-        const fs = geotechnicalAnalysisTable[i].fs;
-        const remarks_fs = geotechnicalAnalysisTable[i].remarks_fs;
-
-        const volumetricStrain =
-          (await compare(`${depthOfSoil} > (2 * ${footingWidth})`)) ||
-          (await compare(`${fs} >= 2`))
-            ? "0"
-            : (await compare(`${fs} <= 0.5`))
-              ? "0.05"
-              : computeString(`(2 - ${fs}) * 0.025`);
-
-        const volumetricSettlement = computeString(
-          `${volumetricStrain} * ${layerThickness} * 1000`,
-        );
-        const settlement = computeString(
-          `${elasticSettlement} + ${volumetricSettlement}`,
-        );
-
-        settlementAnalysisTable.push({
-          latitude, longitude, depthOfSoil, buildingLoad, Width_B,
-          unitWeight, sptNValue, modulusOfElasticity, weightOfFooting, q_gross,
-          depthOfFooting, groundWaterLevel, porewaterAtFoundationLevel,
-          effectiveOverburdenPressureAtFoundationLevel, netFoundationContactPressure,
-          Po, peakStrainInfluenceFactor, strainInfluenceFactor, layerThickness,
-          correctionFactorC1, elapsedTimeInYears, correctionFactorC2,
-          elasticSettlement, fs, remarks_fs, volumetricStrain, volumetricSettlement,
-          settlement,
-        });
+      let strainInfluenceFactor: string;
+      if (x <= 0 || x > 2 * footingWidth) {
+        strainInfluenceFactor = "0";
+      } else if (x <= footingWidth / 2) {
+        strainInfluenceFactor = (
+          ((2 * x) / footingWidth) * (safeIzp - 0.1) +
+          0.1
+        ).toString();
+      } else {
+        strainInfluenceFactor = (
+          ((2 * footingWidth - x) / (1.5 * footingWidth)) *
+          safeIzp
+        ).toString();
       }
 
-      // Elastic settlement only — volumetric (liquefaction) is captured in LPI.
-      const totalSettlement = settlementAnalysisTable.reduce(
-        (acc, curr) => computeString(`${acc} + ${curr.elasticSettlement}`),
-        "0",
+      // const strainInfluenceFactor = (await compare(
+      //   `${depthOfSoil} - (${depthOfSoil} / 2) <= ${depthOfFooting}`,
+      // ))
+      //   ? "0"
+      //   : (await compare(
+      //         `(${depthOfSoil} - (${depthOfSoil} / 2) - ${depthOfFooting}) > (2 * ${footingWidth})`,
+      //       ))
+      //     ? "0"
+      //     : (await compare(
+      //           `(${depthOfSoil} - (${depthOfSoil} / 2) - ${depthOfFooting}) <= (${footingWidth} / 2)`,
+      //         ))
+      //       ? computeString(
+      //           `(2 * ((${depthOfSoil} - (${depthOfSoil} / 2) - ${depthOfFooting}) / ${footingWidth}) * (${peakStrainInfluenceFactor} - 0.1) + 0.1)`,
+      //         )
+      //       : computeString(
+      //           `((2 * ${footingWidth}) - (${depthOfSoil} - (${depthOfSoil} / 2) - ${depthOfFooting})) / (1.5 * ${footingWidth}) * ${peakStrainInfluenceFactor}`,
+      //         );
+
+      const layerThickness = String(iP.layerThickness);
+      // formula for correction factor C1: =MAX(0.5, 1 - 0.5 * (BH2 / BI2))
+      const correctionFactorC1 = computeString(
+        `max(0.5, 1 - 0.5 * (${effectiveOverburdenPressureAtFoundationLevel} / ${netFoundationContactPressure}))`,
+      );
+      const elapsedTimeInYears = String(parametersObject.elapsedTimeInYears);
+      const correctionFactorC2 = computeString(
+        `1 + 0.2 * log10(10 * ${elapsedTimeInYears})`,
       );
 
-      const remarks_settlement = (await compare(
-        `${totalSettlement} <= ${tolerableSettlement}`,
-      ))
-        ? "PASSED"
-        : "FAILED";
+      //formule for elastic settlement: =((BI2 / (BA2 * 1000)) * BL2) * BM2 * BN2 * BP2*1000
+      const elasticSettlement = computeString(
+        `((${netFoundationContactPressure} / (${modulusOfElasticity} * 1000)) * ${strainInfluenceFactor}) * ${layerThickness} * ${correctionFactorC1} * ${correctionFactorC2} * 1000`,
+      );
 
-      const iterationRow: FootingWidthIterationDataType = {
-        foundationDepthM: foundationDepth,
-        footingWidth,
-        tolerableSettlement,
-        depthFactor,
-        n,
-        n_design,
-        nc,
-        sbc_qa,
-        sbc_qa_new,
-        remarks_sbc,
-        settlementAnalysisTable,
-        totalSettlement,
-        remarks_settlement,
-      };
-      footingWidthIterationData.push(iterationRow);
+      const fs = geotechnicalAnalysisTable[i].fs;
+      const remarks_fs = geotechnicalAnalysisTable[i].remarks_fs;
 
-      if (remarks_settlement === "PASSED") {
-        finalFootingWidthIterationPassedData = iterationRow;
-        break outer;
-      }
+      // formula for volumetric strain: =IF(OR(AV2>(2*AX2), BR2>=2), 0, IF(BR2<=0.5, 0.05, (2-BR2)*0.025))
+      const volumetricStrain =
+        (await compare(`${depthOfSoil} > (2 * ${footingWidth})`)) ||
+        (await compare(`${fs} >= 2`))
+          ? "0"
+          : (await compare(`${fs} <= 0.5`))
+            ? "0.05"
+            : computeString(`(2 - ${fs}) * 0.025`);
+
+      // formula for volumetric settlement: =BT2 * BM2*1000
+      const volumetricSettlement = computeString(
+        `${volumetricStrain} * ${layerThickness} * 1000`,
+      );
+
+      const settlement = computeString(
+        `${elasticSettlement} + ${volumetricSettlement}`,
+      );
+
+      settlementAnalysisTable.push({
+        latitude,
+        longitude,
+        depthOfSoil,
+        buildingLoad,
+        Width_B,
+        unitWeight,
+        sptNValue,
+        modulusOfElasticity,
+        weightOfFooting,
+        q_gross,
+        depthOfFooting,
+        groundWaterLevel,
+        porewaterAtFoundationLevel,
+        effectiveOverburdenPressureAtFoundationLevel,
+        netFoundationContactPressure,
+        Po,
+        peakStrainInfluenceFactor,
+        strainInfluenceFactor,
+        layerThickness,
+        correctionFactorC1,
+        elapsedTimeInYears,
+        correctionFactorC2,
+        elasticSettlement,
+        fs,
+        remarks_fs,
+        volumetricStrain,
+        volumetricSettlement,
+        settlement,
+      });
+    }
+
+    const totalSettlement = settlementAnalysisTable.reduce(
+      (acc, curr) => computeString(`${acc} + ${curr.settlement}`),
+      "0",
+    );
+
+    // formula for remarks_settlement: =IF(BV12<= 25, "PASSED", "FAILED")
+    const remarks_settlement = (await compare(
+      `${totalSettlement} <= ${tolerableSettlement}`,
+    ))
+      ? "PASSED"
+      : "FAILED";
+
+    const iterationRow: FootingWidthIterationDataType = {
+      footingWidth,
+      tolerableSettlement,
+      depthFactor,
+      n,
+      n_design,
+      nc,
+      sbc_qa,
+      sbc_qa_new,
+      remarks_sbc,
+      settlementAnalysisTable,
+      totalSettlement,
+      remarks_settlement,
+    };
+    footingWidthIterationData.push(iterationRow);
+
+    if (remarks_settlement === "PASSED") {
+      finalFootingWidthIterationPassedData = iterationRow;
+      break;
     }
   }
 
@@ -1084,7 +1117,6 @@ export type ComputeBoreholesOptions = {
   signal?: AbortSignal;
   maxWorkers?: number;
   chunkSize?: number;
-  boreholes?: DatasetBorehole[];
 };
 
 export function initializeParameterTable_ForDataset(
@@ -1203,11 +1235,7 @@ export async function computeGeotechnicalForAllBoreholes(
   earthquakeMagnitude = 7,
   options?: ComputeBoreholesOptions,
 ): Promise<BoreholeMapResult[]> {
-  const boreholeSrc =
-    options?.boreholes && options.boreholes.length > 0
-      ? options.boreholes
-      : datasetBoreholes;
-  const filteredBoreholes = boreholeSrc.filter(
+  const filteredBoreholes = datasetBoreholes.filter(
     (borehole) =>
       isFiniteNumber(borehole.latitude) && isFiniteNumber(borehole.longitude),
   );
@@ -1264,11 +1292,7 @@ export async function computeGeotechnicalForAllBoreholesParallel(
   earthquakeMagnitude = 7,
   options?: ComputeBoreholesOptions,
 ): Promise<BoreholeMapResult[]> {
-  const boreholeSrc =
-    options?.boreholes && options.boreholes.length > 0
-      ? options.boreholes
-      : datasetBoreholes;
-  const filteredBoreholes = boreholeSrc.filter(
+  const filteredBoreholes = datasetBoreholes.filter(
     (borehole) =>
       isFiniteNumber(borehole.latitude) && isFiniteNumber(borehole.longitude),
   );

@@ -3,6 +3,7 @@ import {
   Circle,
   CircleMarker,
   GeoJSON,
+  LayerGroup,
   MapContainer,
   Marker,
   Popup,
@@ -19,6 +20,7 @@ import {
   isInsideTarlacProvince,
   primeTarlacProvinceOuterRing,
 } from '../utils/tarlacGeography'
+import type { DbBoreholeRecord } from '../api/liquefactPredict'
 
 export type MapViewportSnapshot = {
   centerLat: number
@@ -96,6 +98,8 @@ type Props = {
     remarkLpi: string
     totalLpi: number | null
   }>
+  /** Borehole records loaded from the backend Excel database. */
+  databaseBoreholes?: DbBoreholeRecord[]
   /**
    * Map view immediately before the click (center + zoom). Used to restore
    * the camera if the user cancels a map-pick flow.
@@ -276,11 +280,110 @@ function BoreholeLayer({
   )
 }
 
+const DB_REGIME_COLOR: Record<string, string> = {
+  Sand: '#f59e0b',
+  Silt: '#3b82f6',
+  Clay: '#8b5cf6',
+  Rock: '#64748b',
+}
+
+function dbBoreholeColor(regime: string): string {
+  return DB_REGIME_COLOR[regime] ?? '#10b981'
+}
+
+/** Deduplicates records by Borehole ID so only one pin shows per location. */
+function dedupeBoreholes(records: DbBoreholeRecord[]): DbBoreholeRecord[] {
+  const seen = new Set<string>()
+  return records.filter((r) => {
+    const key = r['Borehole ID'] ?? `${r.Latitude},${r.Longitude}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function DbBoreholeLayer({
+  zoom,
+  records,
+}: {
+  zoom: number
+  records: DbBoreholeRecord[]
+}) {
+  const deduped = useMemo(() => dedupeBoreholes(records), [records])
+  const r = boreholeRadius(zoom) - 1
+
+  if (!deduped.length) return null
+
+  return (
+    <LayerGroup>
+      {deduped.map((b, i) => {
+        const key = b['Borehole ID'] ?? `${b.Latitude}-${b.Longitude}-${i}`
+        const color = dbBoreholeColor(b.SoilRegime)
+        const n60 = b['Corrected SPT-N Value (N1(60))']
+        const sptn = b['SPT N-Value']
+        const gwl = b['Groundwater Level (m)']
+        return (
+          <CircleMarker
+            key={key}
+            center={[b.Latitude, b.Longitude]}
+            radius={Math.max(3, r)}
+            pathOptions={{
+              color: '#fff',
+              weight: 1,
+              fillColor: color,
+              fillOpacity: 0.85,
+            }}
+          >
+            <Popup>
+              <div className="text-xs leading-snug min-w-[140px]">
+                <p className="font-semibold text-slate-800 mb-0.5">
+                  {b['Borehole ID'] ?? 'Borehole'}
+                </p>
+                {b.Municipality && (
+                  <p className="text-slate-500">{b.Municipality}</p>
+                )}
+                <hr className="my-1 border-slate-200" />
+                <p>
+                  <span className="text-slate-500">Soil: </span>
+                  <span
+                    className="font-medium"
+                    style={{ color }}
+                  >
+                    {b.SoilRegime}
+                  </span>
+                  {b['USCS Symbol'] ? ` (${b['USCS Symbol']})` : ''}
+                </p>
+                {(n60 != null || sptn != null) && (
+                  <p>
+                    <span className="text-slate-500">N60 / SPT-N: </span>
+                    {n60 != null ? n60.toFixed(1) : '—'} /{' '}
+                    {sptn != null ? String(sptn) : '—'}
+                  </p>
+                )}
+                {gwl != null && (
+                  <p>
+                    <span className="text-slate-500">GWL: </span>
+                    {gwl.toFixed(1)} m
+                  </p>
+                )}
+                <p className="text-slate-400 mt-0.5">
+                  {b.Latitude.toFixed(5)}°N, {b.Longitude.toFixed(5)}°E
+                </p>
+              </div>
+            </Popup>
+          </CircleMarker>
+        )
+      })}
+    </LayerGroup>
+  )
+}
+
 export function TarlacMap({
   selectedLat,
   selectedLng,
   placeName,
   boreholes,
+  databaseBoreholes,
   onLocationSelect,
   flyToPinToken = 0,
   mapViewRestore = null,
@@ -339,6 +442,18 @@ export function TarlacMap({
   })
 
   return (
+    <div className="relative h-full w-full min-h-0">
+    {databaseBoreholes?.length ? (
+      <div className="pointer-events-none absolute bottom-7 right-2 z-[1000] rounded-lg border border-slate-200/80 bg-white/90 px-2.5 py-2 shadow text-[10px] leading-snug backdrop-blur-sm">
+        <p className="font-semibold text-slate-600 mb-1 uppercase tracking-wide">Boreholes</p>
+        {Object.entries(DB_REGIME_COLOR).map(([regime, color]) => (
+          <div key={regime} className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full border border-white/60 flex-shrink-0" style={{ background: color }} />
+            <span className="text-slate-700">{regime}</span>
+          </div>
+        ))}
+      </div>
+    ) : null}
     <MapContainer
       className="z-0 h-full w-full min-h-0 rounded-lg"
       bounds={TARLAC_BOUNDS}
@@ -392,6 +507,9 @@ export function TarlacMap({
           }}
         />
       ) : null}
+      {databaseBoreholes?.length ? (
+        <DbBoreholeLayer zoom={zoom} records={databaseBoreholes} />
+      ) : null}
       <BoreholeLayer zoom={zoom} boreholes={boreholes} />
       <Marker position={[selectedLat, selectedLng]} icon={selectedIcon}>
         <Popup>
@@ -403,5 +521,6 @@ export function TarlacMap({
         </Popup>
       </Marker>
     </MapContainer>
+    </div>
   )
 }

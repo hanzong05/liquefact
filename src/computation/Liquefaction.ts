@@ -107,6 +107,8 @@ export default class Liquefaction {
   geotechnicalAnalysisTable: GeotechnicalAnalysisTable[];
   totalLpi: string;
   totalLpi_remark: string;
+  /** True when totalLpi > 0 — bearing capacity is not applicable for liquefiable sites. */
+  siteIsLiquefiable: boolean;
 
   footingWidth: string;
   depthOfFooting: string;
@@ -152,6 +154,7 @@ export default class Liquefaction {
     this.footingWidthIterationData = [];
     this.finalFootingWidthIterationPassedData = null;
     this.passed = false;
+    this.siteIsLiquefiable = false;
   }
 
   /**
@@ -164,6 +167,13 @@ export default class Liquefaction {
       Object.assign(this, runResult);
       const geoResult = await computeGeotechnicalAnalysis(this);
       Object.assign(this, geoResult);
+
+      const lpiValue = Number.parseFloat(this.totalLpi);
+      if (Number.isFinite(lpiValue) && lpiValue > 0) {
+        this.siteIsLiquefiable = true;
+        this.passed = false;
+      }
+
       const footingResult = await iterateFootingWidths(this);
       Object.assign(this, footingResult);
       applyZeroLpiIfFootingIterationsIncludeRock(this);

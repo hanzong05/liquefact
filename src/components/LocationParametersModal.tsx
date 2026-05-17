@@ -3,13 +3,13 @@ import { LiquefactLandscapeWordmark } from './LiquefactBrandAssets'
 
 const FOUNDATION_WIDTH_M = 3
 
-/** Foundation depth Df (m): 1.0 … 2.0 in 0.1 m steps */
-const FOUNDATION_DEPTH_CHOICES_M = Array.from({ length: 11 }, (_, i) =>
-  Math.round((1 + i * 0.1) * 10) / 10,
+/** Foundation depth Df (m): 0.5 … 5.0 in 0.5 m steps */
+const FOUNDATION_DEPTH_CHOICES_M = Array.from({ length: 10 }, (_, i) =>
+  Math.round((0.5 + i * 0.5) * 10) / 10,
 )
 
 function nearestFoundationDepthM(m: number): number {
-  const clamped = Math.min(2, Math.max(1, m))
+  const clamped = Math.min(5, Math.max(0.5, m))
   let best = FOUNDATION_DEPTH_CHOICES_M[0]!
   for (const v of FOUNDATION_DEPTH_CHOICES_M) {
     if (Math.abs(v - clamped) < Math.abs(best - clamped)) best = v
