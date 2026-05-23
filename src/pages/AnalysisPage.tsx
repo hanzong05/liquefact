@@ -16,10 +16,7 @@ import type {LocationParameters} from "../components/LocationParametersModal";
 import type {GeocodeHit} from "../utils/geocoding";
 import {TarlacMap, type MapViewportSnapshot} from "../components/TarlacMap";
 import {downloadAnalysisPdf} from "../utils/exportAnalysisPdf";
-import {
-  nearestInterpEligibleBoreholeKm as distanceToNearestInterpEligibleBoreholeKm,
-  snapToNearestDatasetBoreholeSite,
-} from "../utils/boreholeParameterInterpolation";
+import {nearestInterpEligibleBoreholeKm as distanceToNearestInterpEligibleBoreholeKm} from "../utils/boreholeParameterInterpolation";
 import {haversineDistanceKm} from "../utils/geo";
 import {
   NEIGHBOR_CALIBRATION_MAX_RADIUS_KM,
@@ -500,16 +497,6 @@ export function AnalysisPage() {
     let lo = Number.parseFloat(headerLng);
     if (!Number.isFinite(la) || !Number.isFinite(lo)) return;
 
-    // If typed coords land within 25 m of a dataset borehole, snap to its exact
-    // coordinates so the computation takes the same postPredict path as a map click.
-    const snapped = snapToNearestDatasetBoreholeSite(la, lo, activeBoreholeSrc);
-    if (snapped) {
-      la = snapped.lat;
-      lo = snapped.lng;
-      setHeaderLat(la.toFixed(6));
-      setHeaderLng(lo.toFixed(6));
-    }
-
     if (showHeaderGoParamsModal) {
       return;
     }
@@ -874,7 +861,7 @@ export function AnalysisPage() {
                           Allowable Soil Bearing Capacity
                         </span>
                         <span className="max-w-[55%] text-right text-sm font-semibold tabular-nums text-slate-900 wrap-break-word">
-                          {analysis?.siteIsLiquefiable
+                          {lpiSum !== null && lpiSum >= 0.005
                             ? "—"
                             : displayFooting
                               ? `${formatSbcValue(displayFooting.sbc_qa_new)} kPa`
